@@ -1,0 +1,8 @@
+# dsh-mode-control bundle patch: mounts the llm-pi-ai capabilities editor into
+# a profile layer stack. The plugin is a settings/UI bridge over the native
+# llm-pi-ai capability vocabulary; it does not register a second LLM adapter.
+# Runtime defaults live at the plugin's config boundary; users override them
+# in their profile patch row with the same id.
+- insert:
+    - id: llm-pi-ai-capabilities
+      name: '@deepseek-ai/dsh-llm-pi-ai-capabilities'
