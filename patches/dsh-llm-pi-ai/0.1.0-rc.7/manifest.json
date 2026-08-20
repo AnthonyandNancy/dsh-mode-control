@@ -1,0 +1,33 @@
+{
+  "package": "@deepseek-ai/dsh-llm-pi-ai",
+  "version": "0.1.0-rc.7",
+  "mode": "Legacy Compatibility",
+  "description": "Adds the Anthropic Messages forceAdaptiveThinking configuration bridge to the rc.7 Harness adapter. Must be applied explicitly by the Harness install/deploy flow; installing dsh-mode-control alone never auto-applies this patch.",
+  "dist": {
+    "integrity": "sha512-8sZuvgylK9ZKQmZtUU4z3DVBcM4Q4SH4OWo4qeOahLOsteT9NdIwZFer6f0QwqH6DjXIqz2Gq+XtntYXznGZPw==",
+    "shasum": "2c3b86e18cc6b7b7ad9c41ad295e077cea94cf41"
+  },
+  "targets": [
+    {
+      "path": "lib/index.js",
+      "sha256": "917c559d3e804c638e69a2e46a6ee922e50636f962eaffae1fab9af56835debd"
+    },
+    {
+      "path": "lib/types/catalog.d.ts",
+      "sha256": "b409fc91cff495403a259e22d8388a5aa66b073b1a1723f5182e04452eb68f39"
+    }
+  ],
+  "patchedHashes": [
+    {
+      "path": "lib/index.js",
+      "sha256": "d09855912f3d40b6459f6c112c6aed43d2844109cb21c1900d2669e3c1c39b8a"
+    },
+    {
+      "path": "lib/types/catalog.d.ts",
+      "sha256": "42232b2faa6cce4740c088fb13fd906dad40d60772aedc578efce2aec45f0f65"
+    }
+  ],
+  "patch": "adapter.patch",
+  "verify": "verify.mjs",
+  "failClosed": true
+}

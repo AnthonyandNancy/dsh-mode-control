@@ -10,6 +10,7 @@ import {
   PI_AI_MODALITIES,
   PI_AI_REASONING_LEVELS,
   type CapabilitiesAuthoringConfig,
+  type CompatCapabilityAuthoring,
   type CompiledProviderCapabilities,
   type ModelCapabilityAuthoring,
   type PiAiModality,
@@ -20,11 +21,51 @@ import {
 
 export const ALL_REASONING_LEVELS: readonly PiAiReasoningLevel[] = PI_AI_REASONING_LEVELS
 
+/**
+ * Default `reasoningEfforts` wire mapping used only when the UI has confirmed
+ * the target protocol is `anthropic-messages` and is auto-generating the
+ * mapping. Generic compilation deliberately keeps `minimal → minimal`; this
+ * Anthropic-specific default maps `minimal` to `low` so pi-ai does not emit
+ * `output_config.effort: "minimal"` when it has a `minimal → low` fallback.
+ */
+export const ANTHROPIC_REASONING_EFFORT_DEFAULTS: Record<PiAiReasoningLevel, string | null> = {
+  off: null,
+  minimal: 'low',
+  low: 'low',
+  medium: 'medium',
+  high: 'high',
+  xhigh: 'xhigh',
+  max: 'max',
+}
+
 export class CapabilityValidationError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'CapabilityValidationError'
   }
+}
+
+/**
+ * Merge compat sources without ever synthesizing a key.
+ *
+ * `undefined` in a later source does not erase a value from an earlier
+ * source, so an unset `forceAdaptiveThinking` cannot turn an inherited
+ * `true` into an explicit `false`. Sources are merged in argument order;
+ * later sources win per key.
+ */
+function mergeCompat(
+  ...sources: Array<CompatCapabilityAuthoring | undefined>
+): CompatCapabilityAuthoring | undefined {
+  const result: Record<string, unknown> = {}
+  let has = false
+  for (const source of sources) {
+    if (!source) continue
+    has = true
+    for (const [key, value] of Object.entries(source)) {
+      if (value !== undefined) result[key] = value
+    }
+  }
+  return has ? result as CompatCapabilityAuthoring : undefined
 }
 
 function assertValidInput(input: readonly PiAiModality[] | undefined, where: string): void {
@@ -117,6 +158,24 @@ export function toReasoningEfforts(
   return result
 }
 
+/**
+ * Build an Anthropic Messages `reasoningEfforts` dict for an automatically
+ * generated UI mapping.
+ *
+ * Explicit user wire mappings (when a future UI exposes them) take precedence
+ * over this helper; this is only the default used when the UI auto-generates
+ * the mapping for a provider whose resolved protocol is `anthropic-messages`.
+ */
+export function toAnthropicReasoningEfforts(
+  levels: readonly PiAiReasoningLevel[],
+): PiAiReasoningEfforts {
+  const result: PiAiReasoningEfforts = {}
+  for (const level of levels) {
+    result[level] = ANTHROPIC_REASONING_EFFORT_DEFAULTS[level]
+  }
+  return result
+}
+
 function compileModelCapability(
   provider: string,
   model: string,
@@ -125,7 +184,7 @@ function compileModelCapability(
 ): {
   input?: PiAiModality[]
   reasoningEfforts?: PiAiReasoningEfforts | false
-  compat?: { thinkingFormat?: string; supportsReasoningEffort?: boolean }
+  compat?: CompatCapabilityAuthoring
 } {
   const where = `provider "${provider}" model "${model}"`
   // Provider default input is emitted as the route-level `defaultInput`
@@ -147,18 +206,23 @@ function compileModelCapability(
     }
   }
 
+  const reasoningCompat = reasoning !== undefined && reasoning !== false
+    ? reasoning.compat
+    : undefined
+  const compat = mergeCompat(reasoningCompat, capability.compat)
+
   const result: {
     input?: PiAiModality[]
     reasoningEfforts?: PiAiReasoningEfforts | false
-    compat?: { thinkingFormat?: string; supportsReasoningEffort?: boolean }
+    compat?: CompatCapabilityAuthoring
   } = {}
   if (input !== undefined) result.input = [...input]
   if (reasoning === false) {
     result.reasoningEfforts = false
   } else if (reasoning !== undefined) {
     result.reasoningEfforts = toReasoningEfforts(reasoning, where)
-    if (reasoning.compat !== undefined) result.compat = { ...reasoning.compat }
   }
+  if (compat !== undefined) result.compat = compat
   return result
 }
 
@@ -210,10 +274,15 @@ export function compileCapabilities(
       if (providerConfig.defaults.reasoning.defaultEffort !== undefined) {
         compiled.reasoning = providerConfig.defaults.reasoning.defaultEffort
       }
-      if (providerConfig.defaults.reasoning.compat !== undefined) {
-        compiled.compat = { ...providerConfig.defaults.reasoning.compat }
-      }
     }
+    const providerCompat = mergeCompat(
+      providerConfig.defaults?.reasoning !== undefined && providerConfig.defaults.reasoning !== false
+        ? providerConfig.defaults.reasoning.compat
+        : undefined,
+      providerConfig.defaults?.compat,
+      providerConfig.compat,
+    )
+    if (providerCompat !== undefined) compiled.compat = providerCompat
     const modelEntries = Object.entries(providerConfig.models ?? {})
     const declared = options.declaredRoutes?.has(provider) ?? false
     if (declared) {

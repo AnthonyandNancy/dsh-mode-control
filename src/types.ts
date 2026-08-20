@@ -23,6 +23,28 @@ export const PI_AI_REASONING_LEVELS = [
 export type PiAiReasoningLevel = (typeof PI_AI_REASONING_LEVELS)[number]
 
 /**
+ * Three-state authoring mode for Anthropic adaptive thinking:
+ *
+ * - `inherit`   → field is absent / not configured (not the same as disabled)
+ * - `enabled`   → `forceAdaptiveThinking: true`
+ * - `disabled`  → `forceAdaptiveThinking: false`
+ */
+export type AdaptiveThinkingMode = 'inherit' | 'enabled' | 'disabled'
+
+/**
+ * Compat switches the capability editor may carry.
+ *
+ * `forceAdaptiveThinking` is the single source of truth for Anthropic
+ * Messages adaptive thinking. It is tri-state at the settings layer: absent
+ * means inherit, `true` means enabled, and `false` means explicitly disabled.
+ */
+export interface CompatCapabilityAuthoring {
+  thinkingFormat?: string
+  supportsReasoningEffort?: boolean
+  forceAdaptiveThinking?: boolean
+}
+
+/**
  * One model's authoring capability.
  *
  * - `input` absent  = inherit the native llm-pi-ai model/catalog/route answer
@@ -41,6 +63,13 @@ export type PiAiReasoningLevel = (typeof PI_AI_REASONING_LEVELS)[number]
  */
 export interface ModelCapabilityAuthoring {
   input?: readonly PiAiModality[]
+  /**
+   * Optional pass-through compat switches.
+   * Writes into the model's `compat` block. This is the canonical model-level
+   * location; `reasoning.compat` is kept for compatibility and merged under
+   * this field.
+   */
+  compat?: CompatCapabilityAuthoring
   reasoning?:
     | false
     | {
@@ -61,21 +90,28 @@ export interface ModelCapabilityAuthoring {
          */
         wire?: Partial<Record<PiAiReasoningLevel, string | null>>
         /**
-         * Optional pass-through for OpenAI-compatible providers.
-         * Writes into the model's `compat` block.
+         * Optional pass-through compat switches carried inside the reasoning
+         * block for backward compatibility. `ModelCapabilityAuthoring.compat`
+         * is the canonical field; when both are present they are merged with
+         * the top-level field winning per key.
          */
-        compat?: {
-          thinkingFormat?: string
-          supportsReasoningEffort?: boolean
-        }
+        compat?: CompatCapabilityAuthoring
       }
 }
 
 export interface ProviderCapabilityAuthoring {
+  /**
+   * Optional route-level compat switches, written to `providers.<id>.compat`.
+   * `defaults.compat` and `defaults.reasoning.compat` are merged under this
+   * field when present.
+   */
+  compat?: CompatCapabilityAuthoring
   /** Provider-wide defaults; model fields override them. */
   defaults?: {
     input?: readonly PiAiModality[]
     reasoning?: ModelCapabilityAuthoring['reasoning']
+    /** Optional route-level compat switches carried on the defaults block. */
+    compat?: CompatCapabilityAuthoring
   }
   /** Keyed by model id. */
   models?: Record<string, ModelCapabilityAuthoring>
@@ -94,10 +130,7 @@ export interface CompiledProviderCapabilities {
   provider: string
   defaultInput?: PiAiModality[]
   reasoning?: PiAiReasoningLevel
-  compat?: {
-    thinkingFormat?: string
-    supportsReasoningEffort?: boolean
-  }
+  compat?: CompatCapabilityAuthoring
   /**
    * For catalog routes: keyed model overrides.
    * For declared routes: use `models` instead.
@@ -105,10 +138,7 @@ export interface CompiledProviderCapabilities {
   modelOverrides?: Record<string, {
     input?: PiAiModality[]
     reasoningEfforts?: PiAiReasoningEfforts | false
-    compat?: {
-      thinkingFormat?: string
-      supportsReasoningEffort?: boolean
-    }
+    compat?: CompatCapabilityAuthoring
   }>
   /**
    * For declared routes: the full model list with capability fields
@@ -118,9 +148,6 @@ export interface CompiledProviderCapabilities {
     id: string
     input?: PiAiModality[]
     reasoningEfforts?: PiAiReasoningEfforts | false
-    compat?: {
-      thinkingFormat?: string
-      supportsReasoningEffort?: boolean
-    }
+    compat?: CompatCapabilityAuthoring
   }[]
 }

@@ -1,0 +1,106 @@
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -1104,16 +1104,26 @@
+ function resolveModelCompat(provider, entry, route, base, api) {
+ 	const thinkingFormat = entry.compat?.thinkingFormat ?? route?.thinkingFormat;
+ 	const supportsReasoningEffort = entry.compat?.supportsReasoningEffort ?? route?.supportsReasoningEffort;
+-	if (thinkingFormat === void 0 && supportsReasoningEffort === void 0) return {};
+-	if (api !== "openai-completions") {
++	const forceAdaptiveThinking = entry.compat?.forceAdaptiveThinking ?? route?.forceAdaptiveThinking;
++	if (thinkingFormat === void 0 && supportsReasoningEffort === void 0 && forceAdaptiveThinking === void 0) return {};
++	if (api === "openai-completions") {
++		if (entry.compat?.forceAdaptiveThinking !== void 0) invalid(provider, `model "${entry.id}" sets compat "forceAdaptiveThinking", but its api is "${api}"; that switch exists only on anthropic-messages`);
++		return { compat: {
++			...base?.api === api ? base.compat : void 0,
++			...thinkingFormat === void 0 ? {} : { thinkingFormat },
++			...supportsReasoningEffort === void 0 ? {} : { supportsReasoningEffort }
++		} };
++	}
++	if (api === "anthropic-messages") {
+ 		if (entry.compat?.thinkingFormat !== void 0 || entry.compat?.supportsReasoningEffort !== void 0) invalid(provider, `model "${entry.id}" sets compat reasoning switches, but its api is "${api}"; thinkingFormat and supportsReasoningEffort exist only on openai-completions`);
+-		return {};
++		return { compat: {
++			...base?.api === api ? base.compat : void 0,
++			...forceAdaptiveThinking === void 0 ? {} : { forceAdaptiveThinking }
++		} };
+ 	}
+-	return { compat: {
+-		...base?.api === api ? base.compat : void 0,
+-		...thinkingFormat === void 0 ? {} : { thinkingFormat },
+-		...supportsReasoningEffort === void 0 ? {} : { supportsReasoningEffort }
+-	} };
++	if (entry.compat?.thinkingFormat !== void 0 || entry.compat?.supportsReasoningEffort !== void 0) invalid(provider, `model "${entry.id}" sets compat reasoning switches, but its api is "${api}"; thinkingFormat and supportsReasoningEffort exist only on openai-completions`);
++	if (entry.compat?.forceAdaptiveThinking !== void 0) invalid(provider, `model "${entry.id}" sets compat "forceAdaptiveThinking", but its api is "${api}"; that switch exists only on anthropic-messages`);
++	return {};
+ }
+ /**
+ * Materialize one route's catalog by merging the installed catalog defaults
+@@ -1142,7 +1152,8 @@
+ 	}));
+ 	if (entries.length === 0) invalid(provider, "resolves no models; the installed catalog does not describe this route, so its models must be listed in configuration");
+ 	const routeApi = sharedCatalogApi(defaults);
+-	const routeCompatDefined = request.compat?.thinkingFormat !== void 0 || request.compat?.supportsReasoningEffort !== void 0;
++	const routeOpenAICompatDefined = request.compat?.thinkingFormat !== void 0 || request.compat?.supportsReasoningEffort !== void 0;
++	const routeAnthropicCompatDefined = request.compat?.forceAdaptiveThinking !== void 0;
+ 	const seen = /* @__PURE__ */ new Set();
+ 	const configuredMaxTokens = /* @__PURE__ */ new Map();
+ 	const models = entries.map((entry) => {
+@@ -1174,7 +1185,8 @@
+ 			...resolveModelCompat(provider, entry, request.compat, base, api)
+ 		};
+ 	});
+-	if (routeCompatDefined && !models.some((model) => model.api === "openai-completions")) invalid(provider, "sets compat reasoning switches, but no model on the route speaks openai-completions; thinkingFormat and supportsReasoningEffort exist only on that protocol");
++	if (routeOpenAICompatDefined && !models.some((model) => model.api === "openai-completions")) invalid(provider, "sets compat reasoning switches, but no model on the route speaks openai-completions; thinkingFormat and supportsReasoningEffort exist only on that protocol");
++	if (routeAnthropicCompatDefined && !models.some((model) => model.api === "anthropic-messages")) invalid(provider, "sets compat forceAdaptiveThinking, but no model on the route speaks anthropic-messages; forceAdaptiveThinking exists only on that protocol");
+ 	return {
+ 		models,
+ 		configuredMaxTokens
+@@ -1368,7 +1380,8 @@
+ });
+ const compatProfile = z.object({
+ 	thinkingFormat: z.union(SUPPORTED_THINKING_FORMATS),
+-	supportsReasoningEffort: z.boolean()
++	supportsReasoningEffort: z.boolean(),
++	forceAdaptiveThinking: z.boolean()
+ });
+ /**
+ * Keys are the offered levels, values their wire spellings. A valueless key
+--- a/lib/types/catalog.d.ts
++++ b/lib/types/catalog.d.ts
+@@ -74,18 +74,19 @@
+ export type PiAiReasoningEfforts = Partial<Record<ModelThinkingLevel, string | null>>;
+ /**
+  * Reasoning-dispatch compatibility switches, set on the route (its models'
+- * default) or per model (winning over the route). Only the switches pi-ai's
+- * reasoning dispatch reads are offered; the rest of pi-ai's compat surface
+- * keeps its baseURL-derived auto-detection. pi-ai types both fields only on
+- * `OpenAICompletionsCompat` — the other wire protocols define their reasoning
+- * fields in the protocol itself — so resolution rejects a model-level switch
+- * anywhere else, while a route-level default skips past models it cannot fit.
++ * default) or per model (winning over the route). OpenAI switches are
++ * `thinkingFormat` / `supportsReasoningEffort` and exist only on
++ * `openai-completions`; Anthropic Adaptive Thinking is
++ * `forceAdaptiveThinking` and exists only on `anthropic-messages`. The rest
++ * of pi-ai's compat surface keeps its baseURL-derived auto-detection.
+  */
+ export interface PiAiCompatProfile {
+-    /** Reasoning parameter format the endpoint expects; absent keeps the catalog entry's, then pi-ai's baseURL-derived guess. */
++    /** Reasoning parameter format the endpoint expects; absent keeps the catalog entry's, then pi-ai's baseURL-derived guess. Only meaningful on `openai-completions`. */
+     thinkingFormat?: PiAiThinkingFormat;
+-    /** Whether the endpoint accepts `reasoning_effort`; absent keeps the catalog entry's, then pi-ai's baseURL-derived guess. */
++    /** Whether the endpoint accepts `reasoning_effort`; absent keeps the catalog entry's, then pi-ai's baseURL-derived guess. Only meaningful on `openai-completions`. */
+     supportsReasoningEffort?: boolean;
++    /** Force Anthropic Messages Adaptive Thinking; absent keeps the catalog entry's, then pi-ai's default. Only meaningful on `anthropic-messages`. */
++    forceAdaptiveThinking?: boolean;
+ }
+ /** One configured model entry: an id plus the catalog fields it overrides. */
+ export interface PiAiModelProfile {
+@@ -145,7 +146,7 @@
+     models?: readonly PiAiModelProfile[];
+     /** Installed-catalog customizations by model id; only meaningful while `models` is absent. */
+     modelOverrides?: Readonly<Record<string, PiAiModelOverride>>;
+-    /** Reasoning-dispatch switches for every `openai-completions` model on the route; entries override per field. */
++    /** Reasoning-dispatch switches: OpenAI fields land on `openai-completions` models, `forceAdaptiveThinking` lands on `anthropic-messages` models; entries override per field. */
+     compat?: PiAiCompatProfile;
+     /** Context capacity for a model neither the entry nor the catalog sizes. */
+     defaultContextWindow: number;

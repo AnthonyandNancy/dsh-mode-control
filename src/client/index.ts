@@ -12,30 +12,33 @@
  */
 
 import { createElement, useEffect, useRef, useState } from 'react'
+import {
+  asArray,
+  asRecord,
+  collectOpsForModels,
+  collectOpsForProvider,
+  detectDshMode,
+  isAnthropicProvider,
+  parseModelDraft,
+  parseProviderDraft,
+  LEVELS,
+  MODALITIES,
+  type AdaptiveThinkingMode,
+  type DshMode,
+  type ModelDraft,
+  type ProviderDraft,
+} from './ops.ts'
 
 const NS = 'settings.llm-pi-ai-capabilities'
 const PI_AI_NS = 'llm-pi-ai'
-const LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
-const MODALITIES = ['text', 'image'] as const
-
-type ReasoningMode = 'inherit' | 'unsupported' | 'custom'
-
-interface ModelDraft {
-  input: string[]
-  reasoningMode: ReasoningMode
-  efforts: string[]
-}
-
-interface ProviderDraft {
-  defaultInput: string[]
-  defaultReasoning: string
-}
 
 interface CapabilitiesState {
   status: 'loading' | 'ready' | 'error'
   writable: boolean
   revision: number
   providers: Record<string, unknown>
+  catalogGroups: unknown[]
+  dshMode: DshMode
   selectedProvider: string
   providerDrafts: Record<string, ProviderDraft>
   modelDrafts: Record<string, Record<string, ModelDraft>>
@@ -48,57 +51,11 @@ const EMPTY_STATE: CapabilitiesState = {
   writable: true,
   revision: 0,
   providers: {},
+  catalogGroups: [],
+  dshMode: 'unknown',
   selectedProvider: '',
   providerDrafts: {},
   modelDrafts: {},
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {}
-}
-
-function asArray(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : []
-}
-
-function parseInput(value: unknown): string[] {
-  if (!Array.isArray(value)) return []
-  return value.filter((item): item is string =>
-    typeof item === 'string' && (MODALITIES as readonly string[]).includes(item),
-  )
-}
-
-function parseModelDraft(modelConfig: unknown): ModelDraft {
-  const cfg = asRecord(modelConfig)
-  const reasoningEfforts = cfg['reasoningEfforts']
-  let reasoningMode: ReasoningMode = 'inherit'
-  let efforts: string[] = []
-  if (reasoningEfforts === false) {
-    reasoningMode = 'unsupported'
-  } else if (reasoningEfforts !== null && typeof reasoningEfforts === 'object') {
-    const known = Object.keys(reasoningEfforts as Record<string, unknown>)
-      .filter((level) => (LEVELS as readonly string[]).includes(level))
-    if (known.length > 0) {
-      reasoningMode = 'custom'
-      efforts = known
-    }
-  }
-  return {
-    input: parseInput(cfg['input']),
-    reasoningMode,
-    efforts,
-  }
-}
-
-function providerDefaultsOf(providerConfig: unknown): ProviderDraft {
-  const cfg = asRecord(providerConfig)
-  const reasoning = cfg['reasoning']
-  return {
-    defaultInput: parseInput(cfg['defaultInput']),
-    defaultReasoning: typeof reasoning === 'string' && (LEVELS as readonly string[]).includes(reasoning) ? reasoning : '',
-  }
 }
 
 function modelListOf(
@@ -142,93 +99,6 @@ function modelConfigOf(providerConfig: unknown, model: string): unknown {
   if (found !== undefined) return found
   const overrides = asRecord(cfg['modelOverrides'])
   return overrides[model]
-}
-
-function inputFor(input: string[]): unknown {
-  return input.length > 0 ? [...input] : undefined
-}
-
-function reasoningEffortsFor(draft: ModelDraft): unknown {
-  if (draft.reasoningMode === 'unsupported') return false
-  if (draft.reasoningMode !== 'custom') return undefined
-  const result: Record<string, string | null> = {}
-  for (const level of LEVELS) {
-    if (!draft.efforts.includes(level)) continue
-    result[level] = level === 'off' ? null : level
-  }
-  if (Object.keys(result).length === 0) return undefined
-  return result
-}
-
-function modelCapabilityFields(draft: ModelDraft): Record<string, unknown> {
-  const result: Record<string, unknown> = {}
-  const input = inputFor(draft.input)
-  if (input !== undefined) result['input'] = input
-  const efforts = reasoningEffortsFor(draft)
-  if (efforts !== undefined) result['reasoningEfforts'] = efforts
-  return result
-}
-
-function collectOpsForModels(
-  provider: string,
-  providerConfig: unknown,
-  drafts: Record<string, ModelDraft>,
-): Array<{ op: 'set' | 'unset'; path: string[]; value?: unknown }> {
-  const ops: Array<{ op: 'set' | 'unset'; path: string[]; value?: unknown }> = []
-  const cfg = asRecord(providerConfig)
-  const usesModelsArray = Array.isArray(cfg['models']) && (cfg['models'] as unknown[]).length > 0
-  if (usesModelsArray) {
-    const current = asArray(cfg['models']).map(entry => ({ ...asRecord(entry) }))
-    for (const [model, draft] of Object.entries(drafts)) {
-      const fields = modelCapabilityFields(draft)
-      let entry = current.find(item => item['id'] === model)
-      if (entry === undefined) {
-        entry = { id: model }
-        current.push(entry)
-      }
-      for (const key of ['input', 'reasoningEfforts']) {
-        if (fields[key] !== undefined) entry[key] = fields[key]
-        else delete entry[key]
-      }
-    }
-    ops.push({ op: 'set', path: ['providers', provider, 'models'], value: current })
-  } else {
-    const overrides = asRecord(cfg['modelOverrides'])
-    for (const [model, draft] of Object.entries(drafts)) {
-      const fields = modelCapabilityFields(draft)
-      const base = ['providers', provider, 'modelOverrides', model]
-      if (Object.keys(fields).length === 0) {
-        if (Object.prototype.hasOwnProperty.call(overrides, model)) {
-          ops.push({ op: 'unset', path: base })
-        }
-      } else {
-        ops.push({ op: 'set', path: base, value: fields })
-      }
-    }
-  }
-  return ops
-}
-
-function collectOpsForProvider(
-  provider: string,
-  providerConfig: unknown,
-  draft: ProviderDraft,
-): Array<{ op: 'set' | 'unset'; path: string[]; value?: unknown }> {
-  const ops: Array<{ op: 'set' | 'unset'; path: string[]; value?: unknown }> = []
-  const cfg = asRecord(providerConfig)
-  const base = ['providers', provider]
-  const defaultInput = inputFor(draft.defaultInput)
-  if (defaultInput !== undefined) {
-    ops.push({ op: 'set', path: [...base, 'defaultInput'], value: defaultInput })
-  } else if (cfg['defaultInput'] !== undefined) {
-    ops.push({ op: 'unset', path: [...base, 'defaultInput'] })
-  }
-  if (draft.defaultReasoning !== '') {
-    ops.push({ op: 'set', path: [...base, 'reasoning'], value: draft.defaultReasoning })
-  } else if (cfg['reasoning'] !== undefined) {
-    ops.push({ op: 'unset', path: [...base, 'reasoning'] })
-  }
-  return ops
 }
 
 function levelLabel(level: string): string {
@@ -282,6 +152,9 @@ function injectStyles(): void {
 .dsh-mc-error{color:var(--dsw-alias-state-error-primary);margin:0;font-size:13px;line-height:20px}
 .dsh-mc-saved{color:var(--dsw-alias-state-success-primary);margin:0;font-size:13px;line-height:20px}
 .dsh-mc-empty{color:var(--dsw-alias-label-tertiary);padding:8px 0}
+.dsh-mc-mode{margin:0;font-size:13px;line-height:20px}
+.dsh-mc-mode-native{color:var(--dsw-alias-label-tertiary)}
+.dsh-mc-mode-legacy{color:var(--dsw-alias-state-warning-primary,var(--dsw-alias-label-tertiary))}
 .dsh-mc-actions{flex-direction:row;align-items:center;gap:8px;display:flex}
 @media (max-width:720px){
 .dsh-mc-split{flex-direction:column}
@@ -343,6 +216,26 @@ function Dropdown(props: any): any {
   )
 }
 
+function ModeStatus(props: any): any {
+  const { mode, t } = props
+  const h = createElement
+  switch (mode) {
+    case 'rc8':
+      return h('p', { className: 'dsh-mc-mode dsh-mc-mode-native' }, t('modeNative'))
+    case 'rc6':
+      return h('p', { className: 'dsh-mc-mode dsh-mc-mode-legacy' },
+        t('modeLegacyRc6Title'), h('br'), t('modeLegacyRc6Detail'))
+    case 'rc7':
+      return h('p', { className: 'dsh-mc-mode dsh-mc-mode-legacy' },
+        t('modeLegacyRc7Title'), h('br'), t('modeLegacyRc7Detail'))
+    case 'legacy':
+      return h('p', { className: 'dsh-mc-mode dsh-mc-mode-legacy' },
+        t('modeLegacyTitle'), h('br'), t('modeLegacyDetail'))
+    default:
+      return null
+  }
+}
+
 function CapabilitiesSection(props: any): any {
   const api = props.api
   const remote = props.remote
@@ -356,10 +249,17 @@ function CapabilitiesSection(props: any): any {
   selectedModelRef.current = selectedModel
   const activeModelRef = useRef('')
 
-  const load = (): Promise<void> => {
+  const load = async (): Promise<void> => {
     setState(prev => ({ ...prev, status: 'loading', error: undefined, saved: undefined }))
-    return api.settings.describe({}).then((response: any) => {
-      const result = response?.result
+    try {
+      const [settingsResponse, hostVersion] = await Promise.all([
+        api.settings.describe({}),
+        Promise.resolve()
+          .then(() => api.host?.describe?.({}))
+          .then((response: any) => response?.result?.value?.version)
+          .catch(() => undefined),
+      ])
+      const result = settingsResponse?.result
       if (result?.ok !== true) throw new Error(result?.error?.message ?? 'settings.describe failed')
       const namespaces = asArray(result.value?.namespaces)
       const ns = namespaces.find((item: any) => asRecord(item)['ns'] === PI_AI_NS)
@@ -369,6 +269,7 @@ function CapabilitiesSection(props: any): any {
       }
       const view = asRecord(ns)
       const value = asRecord(view['value'])
+      const schema = view['schema']
       const providers = asRecord(value['providers'])
       const providerNames = Object.keys(providers)
       const previousProvider = stateRef.current.selectedProvider
@@ -377,49 +278,42 @@ function CapabilitiesSection(props: any): any {
       const modelDrafts: Record<string, Record<string, ModelDraft>> = {}
       for (const provider of providerNames) {
         const providerConfig = providers[provider]
-        providerDrafts[provider] = providerDefaultsOf(providerConfig)
+        providerDrafts[provider] = parseProviderDraft(providerConfig)
         modelDrafts[provider] = {}
       }
-      return api.llm.models({}).then((catalogResponse: any) => {
+      let groups: unknown[] = []
+      try {
+        const catalogResponse = await api.llm.models({})
         const catalogResult = catalogResponse?.result
-        const groups = catalogResult?.ok === true ? asArray(catalogResult.value?.groups) : []
-        for (const provider of providerNames) {
-          const providerConfig = providers[provider]
-          const ids = modelListOf(provider, providerConfig, groups)
-          for (const model of ids) {
-            const modelConfig = modelConfigOf(providerConfig, model)
-            modelDrafts[provider][model] = parseModelDraft(modelConfig)
-          }
+        groups = catalogResult?.ok === true ? asArray(catalogResult.value?.groups) : []
+      } catch {
+        groups = []
+      }
+      for (const provider of providerNames) {
+        const providerConfig = providers[provider]
+        const ids = modelListOf(provider, providerConfig, groups)
+        for (const model of ids) {
+          const modelConfig = modelConfigOf(providerConfig, model)
+          modelDrafts[provider][model] = parseModelDraft(modelConfig)
         }
-        const nextModels = Object.keys(modelDrafts[selectedProvider] ?? {})
-        const nextModel = nextModels.includes(selectedModelRef.current) ? selectedModelRef.current : (nextModels[0] ?? '')
-        setState({
-          status: 'ready',
-          writable: result.value?.writable !== false,
-          revision: typeof view['revision'] === 'number' ? view['revision'] as number : 0,
-          providers,
-          selectedProvider,
-          providerDrafts,
-          modelDrafts,
-        })
-        setSelectedModel(nextModel)
-      }).catch(() => {
-        const nextModels = Object.keys(modelDrafts[selectedProvider] ?? {})
-        const nextModel = nextModels.includes(selectedModelRef.current) ? selectedModelRef.current : (nextModels[0] ?? '')
-        setState({
-          status: 'ready',
-          writable: result.value?.writable !== false,
-          revision: typeof view['revision'] === 'number' ? view['revision'] as number : 0,
-          providers,
-          selectedProvider,
-          providerDrafts,
-          modelDrafts,
-        })
-        setSelectedModel(nextModel)
+      }
+      const nextModels = Object.keys(modelDrafts[selectedProvider] ?? {})
+      const nextModel = nextModels.includes(selectedModelRef.current) ? selectedModelRef.current : (nextModels[0] ?? '')
+      setState({
+        status: 'ready',
+        writable: result.value?.writable !== false,
+        revision: typeof view['revision'] === 'number' ? view['revision'] as number : 0,
+        providers,
+        catalogGroups: groups,
+        selectedProvider,
+        providerDrafts,
+        modelDrafts,
+        dshMode: detectDshMode(hostVersion, schema),
       })
-    }).catch((error: any) => {
+      setSelectedModel(nextModel)
+    } catch (error: any) {
       setState(prev => ({ ...prev, status: 'error', error: String(error?.message ?? error) }))
-    })
+    }
   }
 
   useEffect(() => {
@@ -481,9 +375,10 @@ function CapabilitiesSection(props: any): any {
   const save = (): void => {
     if (state.status !== 'ready' || state.selectedProvider === '') return
     const provider = state.selectedProvider
+    const anthropic = isAnthropicProvider(provider, state.providers[provider], state.catalogGroups)
     const ops = [
       ...collectOpsForProvider(provider, state.providers[provider], state.providerDrafts[provider]),
-      ...collectOpsForModels(provider, state.providers[provider], state.modelDrafts[provider] ?? {}),
+      ...collectOpsForModels(provider, state.providers[provider], state.modelDrafts[provider] ?? {}, anthropic),
     ]
     setState(prev => ({ ...prev, saved: undefined, error: undefined }))
     void api.settings.mutate({ ns: PI_AI_NS, ops, expectedRevision: state.revision }).then((response: any) => {
@@ -523,6 +418,7 @@ function CapabilitiesSection(props: any): any {
 
   const provider = state.selectedProvider
   const providerDraft = state.providerDrafts[provider]
+  const anthropic = isAnthropicProvider(provider, state.providers[provider], state.catalogGroups)
   const modelDrafts = state.modelDrafts[provider] ?? {}
   const modelIds = Object.keys(modelDrafts)
   const filteredModelIds = search.trim() === ''
@@ -571,6 +467,7 @@ function CapabilitiesSection(props: any): any {
 
     providerDraft ? h('div', { className: 'dsh-mc-card' },
       h('h3', { className: 'dsh-mc-section-title' }, t('providerDefaults')),
+      h(ModeStatus, { mode: state.dshMode, t }),
       h('div', { className: 'dsh-mc-field' },
         h('span', { className: 'dsh-mc-field-label' }, t('inputCapability')),
         h('div', { className: 'dsh-mc-chips' },
@@ -595,6 +492,21 @@ function CapabilitiesSection(props: any): any {
           ariaLabel: t('defaultReasoning'),
         }),
       ),
+      anthropic ? h('div', { className: 'dsh-mc-field' },
+        h('span', { className: 'dsh-mc-field-label' }, t('anthropicReasoningEffort')),
+        h('p', { className: 'dsh-mc-muted', style: { margin: 0 } }, t('anthropicReasoningEffortDescription')),
+        h(Dropdown, {
+          value: providerDraft.adaptiveThinking,
+          options: [
+            { value: 'inherit', label: t('inherit') },
+            { value: 'enabled', label: t('adaptiveEnabled') },
+            { value: 'disabled', label: t('adaptiveDisabled') },
+          ],
+          onChange: (value: AdaptiveThinkingMode) => updateProviderDraft({ adaptiveThinking: value }),
+          placeholder: t('inherit'),
+          ariaLabel: t('anthropicReasoningEffort'),
+        }),
+      ) : null,
     ) : null,
 
     h('div', { className: 'dsh-mc-field' },
@@ -704,12 +616,23 @@ const zh = {
   pageDescription: '配置第三方模型的输入与思考能力。',
   provider: '提供商',
   providerDefaults: '提供商默认能力',
+  modeNative: '✓ DSH rc.8 原生支持，无需 Adapter 补丁',
+  modeLegacyRc6Title: 'DSH rc.6 兼容模式',
+  modeLegacyRc6Detail: '需应用 rc.6 Adapter 补丁后生效',
+  modeLegacyRc7Title: 'DSH rc.7 兼容模式',
+  modeLegacyRc7Detail: '需应用 rc.7 Adapter 补丁后生效',
+  modeLegacyTitle: 'DSH 旧版兼容模式',
+  modeLegacyDetail: '需应用对应版本的 Adapter 补丁后生效',
   models: '模型',
   searchModels: '搜索模型',
   inputCapability: '输入能力',
   reasoningCapability: '思考能力',
   reasoningLevels: '思考档位',
   defaultReasoning: '默认思考程度',
+  anthropicReasoningEffort: 'Anthropic 思考等级透传',
+  anthropicReasoningEffortDescription: '启用后使用 Adaptive Thinking，将当前思考档位通过 output_config.effort 发送到 Anthropic Messages 上游。',
+  adaptiveEnabled: '启用',
+  adaptiveDisabled: '禁用',
   inherit: '继承',
   custom: '自定义',
   unsupported: '不支持',
@@ -739,12 +662,23 @@ const en = {
   pageDescription: 'Configure input and reasoning capabilities for third-party models.',
   provider: 'Provider',
   providerDefaults: 'Provider Defaults',
+  modeNative: '✓ Native support · DSH rc.8',
+  modeLegacyRc6Title: 'Legacy compatibility · DSH rc.6',
+  modeLegacyRc6Detail: 'Requires rc.6 adapter patch',
+  modeLegacyRc7Title: 'Legacy compatibility · DSH rc.7',
+  modeLegacyRc7Detail: 'Requires rc.7 adapter patch',
+  modeLegacyTitle: 'Legacy compatibility',
+  modeLegacyDetail: 'Requires the matching adapter patch',
   models: 'Models',
   searchModels: 'Search models',
   inputCapability: 'Input',
   reasoningCapability: 'Reasoning',
   reasoningLevels: 'Reasoning Levels',
   defaultReasoning: 'Default Reasoning',
+  anthropicReasoningEffort: 'Anthropic Reasoning Effort',
+  anthropicReasoningEffortDescription: 'Use adaptive thinking and send the selected reasoning level through output_config.effort to Anthropic Messages providers.',
+  adaptiveEnabled: 'Enabled',
+  adaptiveDisabled: 'Disabled',
   inherit: 'Inherit',
   custom: 'Custom',
   unsupported: 'Unsupported',
