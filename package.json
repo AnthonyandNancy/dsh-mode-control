@@ -1,6 +1,6 @@
 {
   "name": "@deepseek-ai/dsh-llm-pi-ai-capabilities",
-  "version": "0.0.1",
+  "version": "0.0.8",
   "description": "Model capability editor for llm-pi-ai: configure reasoning efforts and input modalities per provider/model",
   "private": true,
   "type": "module",

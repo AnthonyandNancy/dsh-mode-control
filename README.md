@@ -21,6 +21,47 @@ The UI detects the running mode from `api.host.describe().version` and falls
 back to the `llm-pi-ai` settings schema (`forceAdaptiveThinking` presence =
 rc.8 native).
 
+## Reasoning Level ≠ Wire Value
+
+In `reasoningEfforts`, the left side is the DSH canonical reasoning level, and
+the right side is the actual effort value sent to the upstream API:
+
+```text
+off / minimal / low / medium / high / xhigh / max
+```
+
+A normal generic Custom mapping keeps canonical identity:
+
+```yaml
+reasoningEfforts:
+  high: high
+  xhigh: xhigh
+  max: max
+```
+
+A gateway may spell the same canonical level differently, for example:
+
+```yaml
+reasoningEfforts:
+  high: high
+  max: xhigh
+```
+
+This plugin keeps the saved right-side wire values across unrelated edits.
+Inherit mode does not fabricate a mapping from the catalog; the Custom UI shows
+and edits each canonical level's wire value explicitly.
+
+For OpenAI Responses, pi-ai converts the configured wire value through its
+`thinkingLevelMap` into the request body:
+
+```json
+{
+  "reasoning": {
+    "effort": "<wire value>"
+  }
+}
+```
+
 ## Three-layer responsibility
 
 ```text

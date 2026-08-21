@@ -17,15 +17,18 @@ import {
   asRecord,
   collectOpsForModels,
   collectOpsForProvider,
+  defaultReasoningWire,
   detectDshMode,
   isAnthropicProvider,
   parseModelDraft,
   parseProviderDraft,
+  reasoningWireFor,
   LEVELS,
   MODALITIES,
   type AdaptiveThinkingMode,
   type DshMode,
   type ModelDraft,
+  type PiAiReasoningLevel,
   type ProviderDraft,
 } from './ops.ts'
 
@@ -149,6 +152,11 @@ function injectStyles(): void {
 .dsh-mc-model-item-desc{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dsh-mc-model-detail{flex:1;min-width:0;flex-direction:column;gap:12px;display:flex}
 .dsh-mc-muted{color:var(--dsw-alias-label-tertiary)}
+.dsh-mc-wire-list{flex-direction:column;gap:6px;display:flex}
+.dsh-mc-wire-row{box-sizing:border-box;min-height:36px;flex-direction:row;align-items:center;gap:8px;display:flex}
+.dsh-mc-wire-label{flex:none;min-width:116px;color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px;white-space:nowrap}
+.dsh-mc-wire-input{box-sizing:border-box;height:36px;flex:1;min-width:0;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);padding:0 12px;font-size:14px;line-height:22px}
+.dsh-mc-wire-input::placeholder{color:var(--dsw-alias-label-tertiary)}
 .dsh-mc-error{color:var(--dsw-alias-state-error-primary);margin:0;font-size:13px;line-height:20px}
 .dsh-mc-saved{color:var(--dsw-alias-state-success-primary);margin:0;font-size:13px;line-height:20px}
 .dsh-mc-empty{color:var(--dsw-alias-label-tertiary);padding:8px 0}
@@ -357,7 +365,7 @@ function CapabilitiesSection(props: any): any {
   }
 
   const resetModel = (): void => {
-    updateModelDraft({ input: [], reasoningMode: 'inherit', efforts: [] })
+    updateModelDraft({ input: [], reasoningMode: 'inherit', efforts: [], wire: {} })
   }
 
   const toggleReasoningLevel = (level: string): void => {
@@ -369,7 +377,29 @@ function CapabilitiesSection(props: any): any {
       ? draft.efforts.filter(item => item !== level)
       : [...draft.efforts, level]
     if (next.length === 0) return
-    updateModelDraft({ efforts: next })
+    const wire = { ...draft.wire }
+    if (!next.includes(level)) delete wire[level as PiAiReasoningLevel]
+    updateModelDraft({ efforts: next, wire })
+  }
+
+  const updateReasoningWire = (level: string, value: string): void => {
+    const provider = state.selectedProvider
+    const model = activeModelRef.current
+    if (!provider || !model) return
+    const draft = state.modelDrafts[provider]?.[model]
+    if (!draft) return
+    const trimmed = value.trim()
+    const piLevel = level as PiAiReasoningLevel
+    const normalized = trimmed === ''
+      ? level === 'off'
+        ? null
+        : defaultReasoningWire(piLevel, isAnthropicProvider(provider, state.providers[provider], state.catalogGroups))
+      : level === 'off' && trimmed === 'null'
+        ? null
+        : trimmed
+    updateModelDraft({
+      wire: { ...draft.wire, [level]: normalized },
+    })
   }
 
   const save = (): void => {
@@ -561,12 +591,12 @@ function CapabilitiesSection(props: any): any {
                   h(Chip, {
                     label: t('inherit'),
                     active: activeDraft.reasoningMode === 'inherit',
-                    onClick: () => updateModelDraft({ reasoningMode: 'inherit', efforts: [] }),
+                    onClick: () => updateModelDraft({ reasoningMode: 'inherit', efforts: [], wire: {} }),
                   }),
                   h(Chip, {
                     label: t('unsupported'),
                     active: activeDraft.reasoningMode === 'unsupported',
-                    onClick: () => updateModelDraft({ reasoningMode: 'unsupported', efforts: [] }),
+                    onClick: () => updateModelDraft({ reasoningMode: 'unsupported', efforts: [], wire: {} }),
                   }),
                   h(Chip, {
                     label: t('custom'),
@@ -585,6 +615,29 @@ function CapabilitiesSection(props: any): any {
                         active: activeDraft.efforts.includes(level),
                         onClick: () => toggleReasoningLevel(level),
                       })),
+                    ),
+                  )
+                : null,
+              activeDraft.reasoningMode === 'inherit'
+                ? h('p', { className: 'dsh-mc-muted', style: { margin: 0 } }, t('inheritCatalogWire'))
+                : null,
+              activeDraft.reasoningMode === 'custom'
+                ? h('div', { className: 'dsh-mc-field' },
+                    h('span', { className: 'dsh-mc-field-label' }, t('reasoningWireValues')),
+                    h('div', { className: 'dsh-mc-wire-list' },
+                      LEVELS.filter(level => activeDraft.efforts.includes(level)).map(level => h('div', {
+                        key: level,
+                        className: 'dsh-mc-wire-row',
+                      },
+                        h('span', { className: 'dsh-mc-wire-label' }, `${levelLabel(level)} →`),
+                        h('input', {
+                          className: 'dsh-mc-wire-input',
+                          value: reasoningWireFor(activeDraft, level as PiAiReasoningLevel, anthropic) ?? '',
+                          placeholder: level === 'off' ? 'null' : '',
+                          'aria-label': `${levelLabel(level)} wire value`,
+                          onChange: (event: any) => updateReasoningWire(level, event.target.value),
+                        }),
+                      )),
                     ),
                   )
                 : null,
@@ -628,6 +681,8 @@ const zh = {
   inputCapability: '输入能力',
   reasoningCapability: '思考能力',
   reasoningLevels: '思考档位',
+  reasoningWireValues: '思考档位 → 上游 wire value',
+  inheritCatalogWire: '继承 pi-ai Catalog（wire mapping 由运行时决定）',
   defaultReasoning: '默认思考程度',
   anthropicReasoningEffort: 'Anthropic 思考等级透传',
   anthropicReasoningEffortDescription: '启用后使用 Adaptive Thinking，将当前思考档位通过 output_config.effort 发送到 Anthropic Messages 上游。',
@@ -674,6 +729,8 @@ const en = {
   inputCapability: 'Input',
   reasoningCapability: 'Reasoning',
   reasoningLevels: 'Reasoning Levels',
+  reasoningWireValues: 'Reasoning Level → Upstream Wire Value',
+  inheritCatalogWire: 'Inherit pi-ai Catalog (wire mapping resolved at runtime)',
   defaultReasoning: 'Default Reasoning',
   anthropicReasoningEffort: 'Anthropic Reasoning Effort',
   anthropicReasoningEffortDescription: 'Use adaptive thinking and send the selected reasoning level through output_config.effort to Anthropic Messages providers.',

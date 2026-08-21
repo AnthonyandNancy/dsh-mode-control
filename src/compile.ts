@@ -162,9 +162,9 @@ export function toReasoningEfforts(
  * Build an Anthropic Messages `reasoningEfforts` dict for an automatically
  * generated UI mapping.
  *
- * Explicit user wire mappings (when a future UI exposes them) take precedence
- * over this helper; this is only the default used when the UI auto-generates
- * the mapping for a provider whose resolved protocol is `anthropic-messages`.
+ * Explicit user wire mappings take precedence over this helper; this is only
+ * the default used when the UI auto-generates the mapping for a provider whose
+ * resolved protocol is `anthropic-messages`.
  */
 export function toAnthropicReasoningEfforts(
   levels: readonly PiAiReasoningLevel[],

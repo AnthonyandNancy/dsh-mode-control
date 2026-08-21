@@ -32,6 +32,8 @@ export interface ModelDraft {
   input: string[]
   reasoningMode: ReasoningMode
   efforts: string[]
+  /** Saved canonical level → upstream wire value, preserved across unrelated edits. */
+  wire: Partial<Record<PiAiReasoningLevel, string | null>>
 }
 
 export interface ProviderDraft {
@@ -118,20 +120,27 @@ export function parseModelDraft(modelConfig: unknown): ModelDraft {
   const reasoningEfforts = cfg['reasoningEfforts']
   let reasoningMode: ReasoningMode = 'inherit'
   let efforts: string[] = []
+  const wire: Partial<Record<PiAiReasoningLevel, string | null>> = {}
   if (reasoningEfforts === false) {
     reasoningMode = 'unsupported'
   } else if (reasoningEfforts !== null && typeof reasoningEfforts === 'object') {
-    const known = Object.keys(reasoningEfforts as Record<string, unknown>)
-      .filter((level) => (LEVELS as readonly string[]).includes(level))
-    if (known.length > 0) {
+    const entries = Object.entries(reasoningEfforts as Record<string, unknown>)
+      .filter(([level]) => (LEVELS as readonly string[]).includes(level))
+    for (const [level, value] of entries) {
+      if (typeof value === 'string' || value === null) {
+        wire[level as PiAiReasoningLevel] = value
+      }
+    }
+    efforts = entries.map(([level]) => level)
+    if (efforts.length > 0) {
       reasoningMode = 'custom'
-      efforts = known
     }
   }
   return {
     input: parseInput(cfg['input']),
     reasoningMode,
     efforts,
+    wire,
   }
 }
 
@@ -187,10 +196,33 @@ function inputFor(input: string[]): unknown {
 }
 
 /**
- * Build the `reasoningEfforts` value for a model draft.
+ * Default wire spelling for a canonical level.
  *
  * `anthropic` uses the Anthropic Messages default mapping (`minimal → low`).
- * Generic mapping stays untouched.
+ * Generic mapping defaults to canonical identity.
+ */
+export function defaultReasoningWire(level: PiAiReasoningLevel, anthropic: boolean): string | null {
+  if (anthropic) return ANTHROPIC_REASONING_EFFORT_DEFAULTS[level]
+  return level === 'off' ? null : level
+}
+
+/**
+ * Effective wire spelling for a draft level, preferring the saved mapping.
+ */
+export function reasoningWireFor(
+  draft: ModelDraft,
+  level: PiAiReasoningLevel,
+  anthropic: boolean,
+): string | null {
+  const saved = draft.wire[level]
+  return saved !== undefined ? saved : defaultReasoningWire(level, anthropic)
+}
+
+/**
+ * Build the `reasoningEfforts` value for a model draft.
+ *
+ * Saved wire values are preserved. Newly added levels fall back to the
+ * protocol default without rewriting existing mapping entries.
  */
 export function reasoningEffortsFor(draft: ModelDraft, anthropic = false): unknown {
   if (draft.reasoningMode === 'unsupported') return false
@@ -198,10 +230,11 @@ export function reasoningEffortsFor(draft: ModelDraft, anthropic = false): unkno
   const result: Record<string, string | null> = {}
   for (const level of LEVELS) {
     if (!draft.efforts.includes(level)) continue
-    if (anthropic) {
-      result[level] = ANTHROPIC_REASONING_EFFORT_DEFAULTS[level as PiAiReasoningLevel]
+    const piLevel = level as PiAiReasoningLevel
+    if (draft.wire[piLevel] !== undefined) {
+      result[level] = draft.wire[piLevel]
     } else {
-      result[level] = level === 'off' ? null : level
+      result[level] = defaultReasoningWire(piLevel, anthropic)
     }
   }
   if (Object.keys(result).length === 0) return undefined

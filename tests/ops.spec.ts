@@ -5,8 +5,10 @@ import {
   collectOpsForProvider,
   detectDshMode,
   isAnthropicProvider,
+  parseModelDraft,
   parseProviderDraft,
   reasoningEffortsFor,
+  reasoningWireFor,
   type ModelDraft,
   type ProviderDraft,
 } from '../src/client/ops.ts'
@@ -101,7 +103,7 @@ describe('modelOverrides P0 precise mutation', () => {
 
   it('does not replace or delete the whole override when editing input only', () => {
     const drafts: Record<string, ModelDraft> = {
-      foo: { input: ['text'], reasoningMode: 'inherit', efforts: [] },
+      foo: { input: ['text'], reasoningMode: 'inherit', efforts: [], wire: {} },
     }
     const ops = collectOpsForModels('acme', providerConfig, drafts)
     expect(ops).toEqual([
@@ -114,7 +116,7 @@ describe('modelOverrides P0 precise mutation', () => {
 
   it('keeps contextWindow/maxTokens/compat when saving input and reasoningEfforts', () => {
     const drafts: Record<string, ModelDraft> = {
-      foo: { input: ['text', 'image'], reasoningMode: 'custom', efforts: ['high'] },
+      foo: { input: ['text', 'image'], reasoningMode: 'custom', efforts: ['high'], wire: {} },
     }
     const ops = collectOpsForModels('acme', providerConfig, drafts)
     expect(ops).toEqual([
@@ -125,7 +127,7 @@ describe('modelOverrides P0 precise mutation', () => {
 
   it('restoring reasoning default only removes reasoningEfforts, not the model override', () => {
     const drafts: Record<string, ModelDraft> = {
-      foo: { input: [], reasoningMode: 'inherit', efforts: [] },
+      foo: { input: [], reasoningMode: 'inherit', efforts: [], wire: {} },
     }
     const ops = collectOpsForModels('acme', providerConfig, drafts)
     expect(ops).toEqual([
@@ -148,7 +150,7 @@ describe('models[] branch preserves non-plugin-owned fields', () => {
       ],
     }
     const drafts: Record<string, ModelDraft> = {
-      foo: { input: ['text'], reasoningMode: 'inherit', efforts: [] },
+      foo: { input: ['text'], reasoningMode: 'inherit', efforts: [], wire: {} },
     }
     const ops = collectOpsForModels('acme', providerConfig, drafts)
     expect(ops).toHaveLength(1)
@@ -189,11 +191,133 @@ describe('anthropic protocol detection', () => {
   })
 })
 
+describe('reasoning wire mapping', () => {
+  it('parses canonical levels without dropping saved wire values', () => {
+    const draft = parseModelDraft({
+      reasoningEfforts: {
+        high: 'high',
+        xhigh: 'xhigh',
+        max: 'xhigh',
+      },
+    })
+    expect(draft.reasoningMode).toBe('custom')
+    expect(draft.efforts).toEqual(['high', 'xhigh', 'max'])
+    expect(draft.wire).toEqual({
+      high: 'high',
+      xhigh: 'xhigh',
+      max: 'xhigh',
+    })
+    expect(draft.wire.max).toBe('xhigh')
+  })
+
+  it('preserves max: xhigh when saving an unrelated model edit', () => {
+    const draft = parseModelDraft({
+      reasoningEfforts: { high: 'high', max: 'xhigh' },
+    })
+    draft.input = ['text', 'image']
+    expect(reasoningEffortsFor(draft, false)).toEqual({
+      high: 'high',
+      max: 'xhigh',
+    })
+  })
+
+  it('round-trips saved wire values through model mutation ops', () => {
+    const draft = parseModelDraft({
+      reasoningEfforts: { high: 'high', max: 'xhigh' },
+    })
+    draft.input = ['image']
+    const providerConfig = {
+      modelOverrides: {
+        foo: {
+          reasoningEfforts: { high: 'high', max: 'xhigh' },
+        },
+      },
+    }
+    const ops = collectOpsForModels('acme', providerConfig, { foo: draft }, false)
+    expect(ops).toEqual([
+      { op: 'set', path: ['providers', 'acme', 'modelOverrides', 'foo', 'input'], value: ['image'] },
+      { op: 'set', path: ['providers', 'acme', 'modelOverrides', 'foo', 'reasoningEfforts'], value: { high: 'high', max: 'xhigh' } },
+    ])
+  })
+
+  it('defaults a newly added generic Max level to max', () => {
+    const draft: ModelDraft = {
+      input: [],
+      reasoningMode: 'custom',
+      efforts: ['max'],
+      wire: {},
+    }
+    const ops = collectOpsForModels('acme', { modelOverrides: { foo: {} } }, { foo: draft }, false)
+    expect(ops).toContainEqual({
+      op: 'set',
+      path: ['providers', 'acme', 'modelOverrides', 'foo', 'reasoningEfforts'],
+      value: { max: 'max' },
+    })
+  })
+
+  it('drops deleted canonical levels from the final mapping', () => {
+    const draft = parseModelDraft({
+      reasoningEfforts: { high: 'high', max: 'xhigh' },
+    })
+    draft.efforts = ['high']
+    expect(reasoningEffortsFor(draft, false)).toEqual({ high: 'high' })
+  })
+
+  it('writes an edited Max wire value instead of regenerating identity', () => {
+    const draft = parseModelDraft({
+      reasoningEfforts: { max: 'xhigh' },
+    })
+    draft.wire.max = 'max'
+    const ops = collectOpsForModels('acme', { modelOverrides: { foo: {} } }, { foo: draft }, false)
+    expect(ops).toContainEqual({
+      op: 'set',
+      path: ['providers', 'acme', 'modelOverrides', 'foo', 'reasoningEfforts'],
+      value: { max: 'max' },
+    })
+  })
+
+  it('treats xhigh and max as independent canonical levels', () => {
+    const draft = parseModelDraft({
+      reasoningEfforts: { xhigh: 'xhigh', max: 'xhigh' },
+    })
+    expect(draft.efforts).toEqual(['xhigh', 'max'])
+    expect(reasoningEffortsFor(draft, false)).toEqual({
+      xhigh: 'xhigh',
+      max: 'xhigh',
+    })
+  })
+
+  it('keeps saved wire values on Anthropic while defaulting missing levels', () => {
+    const draft: ModelDraft = {
+      input: [],
+      reasoningMode: 'custom',
+      efforts: ['minimal', 'max'],
+      wire: { max: 'xhigh' },
+    }
+    expect(reasoningEffortsFor(draft, true)).toEqual({
+      minimal: 'low',
+      max: 'xhigh',
+    })
+  })
+
+  it('exposes effective wire values for UI rendering', () => {
+    const draft: ModelDraft = {
+      input: [],
+      reasoningMode: 'custom',
+      efforts: ['max'],
+      wire: { max: 'xhigh' },
+    }
+    expect(reasoningWireFor(draft, 'max', false)).toBe('xhigh')
+    expect(reasoningWireFor({ ...draft, wire: {} }, 'max', false)).toBe('max')
+  })
+})
+
 describe('anthropic reasoningEfforts default mapping', () => {
   const draft: ModelDraft = {
     input: [],
     reasoningMode: 'custom',
     efforts: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+    wire: {},
   }
 
   it('maps minimal to low for anthropic-messages', () => {
