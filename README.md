@@ -1,25 +1,63 @@
 # @deepseek-ai/dsh-llm-pi-ai-capabilities
 
-Model capability editor for `llm-pi-ai`: configure input modalities, reasoning
-efforts, and Anthropic Adaptive Thinking per provider/model.
+DSH 模型能力 + Reasoning 能力 + Wire Compatibility + Subagent Model Control
+配置界面。
 
 This plugin is **not** a second LLM provider and does **not** replace
-`PiAiAdapter`. It is a settings/UI bridge over the native `llm-pi-ai`
-capability vocabulary. It never sends Anthropic requests itself; the request
-path stays entirely inside `dsh-llm-pi-ai` + `pi-ai`.
+`PiAiAdapter`. It is a settings/UI bridge over native DSH settings
+namespaces. It never patches `node_modules`, never monkey-patches `fetch`,
+never wraps/replaces `PiAiAdapter`, and never keeps a second runtime config
+source.
 
 ## Version support matrix
 
-| dsh-llm-pi-ai | Mode                   | Adaptive Thinking | Adapter Patch    |
-| ------------- | ---------------------- | ----------------- | ---------------- |
-| `0.1.0-rc.6`  | Legacy Compatibility   | Patched support   | rc.6 patch       |
-| `0.1.0-rc.7`  | Legacy Compatibility   | Patched support   | rc.7 patch       |
-| `0.1.0-rc.8`  | Native Mode            | Native support    | Forbidden        |
-| `> rc.8`      | Native / Unverified    | Schema-dependent  | Never auto-apply |
+### dsh-llm-pi-ai capability surface
+
+| dsh-llm-pi-ai | Mode                   | Adapter Patch    |
+| ------------- | ---------------------- | ---------------- |
+| `0.1.0-rc.6`  | Legacy Compatibility   | rc.6 patch       |
+| `0.1.0-rc.7`  | Legacy Compatibility   | rc.7 patch       |
+| `0.1.0-rc.8`  | Native Mode            | Forbidden        |
+| `> rc.8`      | Native / Unverified    | Never auto-apply |
 
 The UI detects the running mode from `api.host.describe().version` and falls
-back to the `llm-pi-ai` settings schema (`forceAdaptiveThinking` presence =
-rc.8 native).
+back to the serialized `llm-pi-ai` settings schema.
+
+### dsh-tool-subagent version gate
+
+| `@deepseek-ai/dsh-tool-subagent` | Subagent area |
+| -------------------------------- | ------------- |
+| `< 0.1.1-rc.2`                   | Fully hidden  |
+| `>= 0.1.1-rc.2`                  | Visible       |
+
+The gate is enforced on both sides:
+
+- **Host**: the `dsh-mode-control.subagent` settings namespace is only
+  registered when the effective version is `>= 0.1.1-rc.2` and the
+  `tool-subagent` loader entry exists.
+- **Client**: `SubagentSettingsCard` returns `null` when
+  `runtimeCaps.subagent.visible` is false.
+
+If the version cannot be reliably determined, the subagent area fails closed
+(hidden).
+
+## Feature overview
+
+- **Provider capabilities**: `defaultInput`, `defaultContextWindow`,
+  `defaultMaxTokens`, `defaultReasoning`, `thinkingBudgets`, Anthropic
+  adaptive thinking.
+- **Model capabilities**: `input`, `contextWindow`, `maxTokens`,
+  `reasoningEfforts`, per-model wire values.
+- **Interface Compatibility**: generic metadata-driven UI over the `compat`
+  object. The field list lives in `src/client/compat-fields.ts`; adding a
+  future pi-ai compat field is one registry entry + i18n strings.
+- **Subagent Model Control**: legacy fixed model (`agentOptions`) and native
+  dynamic selection (`subagent-model-selection.enabled/allowedModels`).
+- **InheritBooleanMode**: `inherit` / `enabled` / `disabled` tri-states with
+  `parseInheritBoolean()` and `collectOptionalBooleanOp()`.
+- **Runtime schema detection**: the UI walks the serialized Schemastery
+  schema (`uid/refs`, `dict`, `inner`, union `list`) to decide which fields
+  exist and which enum values are legal.
 
 ## Reasoning Level ≠ Wire Value
 
@@ -48,8 +86,8 @@ reasoningEfforts:
 ```
 
 This plugin keeps the saved right-side wire values across unrelated edits.
-Inherit mode does not fabricate a mapping from the catalog; the Custom UI shows
-and edits each canonical level's wire value explicitly.
+Inherit mode does not fabricate a mapping from the catalog; the Custom UI
+shows and edits each canonical level's wire value explicitly.
 
 For OpenAI Responses, pi-ai converts the configured wire value through its
 `thinkingLevelMap` into the request body:
@@ -79,15 +117,24 @@ pi-ai
 
 `dsh-mode-control` itself does **not** send Anthropic Messages requests.
 
-## Scope
+## Scope and constraints
 
-This version manages one Anthropic compat switch in the UI:
-`compat.forceAdaptiveThinking`.
+The plugin writes only these namespaces:
 
-Other rc.8 compat fields (`supportsTemperature`, `supportsStrictTools`,
-`supportsLongCacheRetention`, ...) are intentionally **not** exposed as
-individual switches. They are preserved byte-for-byte by precise path
-mutations; the UI never replaces a whole `compat` object.
+- `llm-pi-ai` — provider/model capabilities and `compat`.
+- `dsh-mode-control.subagent` — auditable bridge surface for legacy
+  `agentOptions` and the native tool-instance toggle.
+- `subagent-model-selection` — official native allowed-model list, when the
+  namespace exists.
+
+It never:
+
+- replaces a whole `compat` object
+- replaces a whole `modelOverrides.<model>` object
+- string-edits `cordis.yml`
+- patches `node_modules`
+- implements a second LLM provider
+- wraps `PiAiAdapter` or monkey-patches `fetch`
 
 ## Anthropic Adaptive Thinking
 
@@ -121,82 +168,88 @@ It never auto-generates `minimal: minimal` for Anthropic Adaptive Thinking.
 
 Saves use the DSH Settings API with precise path ops:
 
-```text
-api.settings.mutate({
-  ns: "llm-pi-ai",
-  ops,
-  expectedRevision,
-})
+```ts
+api.settings.mutate({ ns: 'llm-pi-ai', ops, expectedRevision })
 ```
 
-Enabled:
+Compat tri-state example:
 
 ```ts
-{ op: 'set', path: ['providers', provider, 'compat', 'forceAdaptiveThinking'], value: true }
+{ op: 'set', path: ['providers', provider, 'compat', 'supportsStore'], value: true }
+// inherit (only when the field exists)
+{ op: 'unset', path: ['providers', provider, 'compat', 'supportsStore'] }
 ```
 
-Disabled:
-
-```ts
-{ op: 'set', path: ['providers', provider, 'compat', 'forceAdaptiveThinking'], value: false }
-```
-
-Inherit (only when the field exists):
-
-```ts
-{ op: 'unset', path: ['providers', provider, 'compat', 'forceAdaptiveThinking'] }
-```
-
-The plugin never sets `providers.<id>.compat` as a whole object.
+The plugin never sets `providers.<id>.compat` or `modelOverrides.<model>` as
+a whole object.
 
 ## modelOverrides safety
 
-The existing whole-override replacement bug is fixed. For catalog routes the
-plugin writes only:
+For catalog routes the plugin writes only:
 
 ```text
 modelOverrides.<model>.input
 modelOverrides.<model>.reasoningEfforts
+modelOverrides.<model>.contextWindow
+modelOverrides.<model>.maxTokens
+modelOverrides.<model>.compat.<field>
 ```
 
 It never sets or unsets the whole `modelOverrides.<model>` object. Unknown
-fields (`contextWindow`, `maxTokens`, `compat`, ...) survive unchanged.
+fields survive unchanged.
 
-## Adapter patches
+## Compat metadata registry
 
-Legacy rc.6 / rc.7 need a version-specific adapter patch to teach the Harness
-adapter about `forceAdaptiveThinking`.
+`src/client/compat-fields.ts` defines:
 
-```text
-patches/
-└─ dsh-llm-pi-ai/
-   ├─ 0.1.0-rc.6/
-   │  ├─ README.md
-   │  ├─ manifest.json
-   │  ├─ adapter.patch
-   │  └─ verify.mjs
-   └─ 0.1.0-rc.7/
-      ├─ README.md
-      ├─ manifest.json
-      ├─ adapter.patch
-      └─ verify.mjs
+- `CompatFieldDefinition` — `key`, `kind` (`boolean|enum|json`), `group`
+  (`common|openai|anthropic|advanced`), `protocols`, label/description keys.
+- `isCompatFieldApplicable(field, protocols)` — protocol filtering.
+- Existing-value escape hatch — a configured field stays visible and editable
+  even when protocol detection says the current protocol does not use it.
+
+The UI renders these fields from metadata in both Provider and Model cards, so
+there is no per-field JSX duplication. `chatTemplateKwargs` /
+`chatTemplateArgs` are JSON textareas; `maxTokensField` / `thinkingFormat`
+are enums sourced from the runtime schema.
+
+## Subagent model control
+
+The subagent card appears only when the version gate passes.
+
+- **Legacy Static** (`agentOptions`): provider / model / maxTokens, plus
+  `reasoningEffort` when the runtime `agentOptions` schema supports it.
+  `Inherit` removes the managed `agentOptions` entirely.
+- **Native Selection** (official `subagent-model-selection`):
+  - `enabled` toggle.
+  - allowed-model pool picker with duplicate / empty validation.
+  - writes `enabled` and `allowedModels` through the official namespace.
+- The tool-instance toggle (`modelSelectionSettings`) is applied through the
+  plugin's own namespace and forwarded to the tool-subagent loader entry via
+  the official `Entry.update()` API. Unknown `agentOptions` fields survive.
+
+Allowed-model validation:
+
+- `enabled: true` with an empty pool is rejected.
+- duplicate `provider/model` routes are rejected.
+- incomplete routes (empty provider or model) are rejected.
+
+## Runtime schema detection
+
+The client resolves the serialized Schemastery envelope and produces:
+
+```ts
+interface RuntimeCapabilities {
+  compatFields: Set<string>
+  providerFields: Set<string>
+  modelFields: Set<string>
+  subagent: SubagentRuntimeCapabilities
+}
 ```
 
-There is **no** `0.1.0-rc.8/adapter.patch`: rc.8 is Native Mode.
-
-Installing this plugin is **not** the same as applying an adapter patch.
-Patches are applied explicitly by the Harness install / deploy flow. The
-plugin never modifies `node_modules`, never monkey-patches `fetch`, and never
-wraps or replaces `PiAiAdapter`.
-
-Verify a patch against its real npm tarball:
-
-```bash
-node patches/dsh-llm-pi-ai/0.1.0-rc.6/verify.mjs
-node patches/dsh-llm-pi-ai/0.1.0-rc.7/verify.mjs
-```
-
-The verifier fails closed on version mismatch and rejects rc.8.
+Provider/model fields (`defaultContextWindow`, `contextWindow`, `maxTokens`,
+…) are only rendered when the runtime schema declares them, so the UI stays
+compatible with older and future DSH schemas.
 
 ## Runtime boundaries
 
@@ -215,7 +268,7 @@ The plugin does **not**:
 
 The page follows the DSH locale service:
 
-- `zh` → 模型能力增强
+- `zh` → 模型能力
 - `en` → Model Capabilities
 
 No separate i18n framework is used.
@@ -233,6 +286,10 @@ npm run build:client
 ```bash
 npm test
 ```
+
+Pure logic modules are unit-tested: semver gate, subagent capability
+detection, compat metadata, compat state/merge, provider/model ops, subagent
+drafts, and runtime schema introspection.
 
 ## Install
 

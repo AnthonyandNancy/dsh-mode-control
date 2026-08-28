@@ -11,6 +11,13 @@ import {
   ANTHROPIC_REASONING_EFFORT_DEFAULTS,
 } from '../compile.ts'
 import type { PiAiReasoningLevel } from '../types.ts'
+export type { PiAiReasoningLevel } from '../types.ts'
+import {
+  collectOpsForCompat,
+  mergeCompatDrafts,
+  parseCompatDrafts,
+  type CompatDrafts,
+} from './compat-state.ts'
 
 export const LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 export const MODALITIES = ['text', 'image'] as const
@@ -34,12 +41,26 @@ export interface ModelDraft {
   efforts: string[]
   /** Saved canonical level → upstream wire value, preserved across unrelated edits. */
   wire: Partial<Record<PiAiReasoningLevel, string | null>>
+  /** Model context window override; empty string means inherit. */
+  contextWindow?: string
+  /** Model maximum output tokens override; empty string means inherit. */
+  maxTokens?: string
+  /** Managed per-model compat drafts. */
+  compat?: CompatDrafts
 }
 
 export interface ProviderDraft {
   defaultInput: string[]
   defaultReasoning: string
   adaptiveThinking: AdaptiveThinkingMode
+  /** Provider default context window; empty string means inherit. */
+  defaultContextWindow?: string
+  /** Provider default maximum output tokens; empty string means inherit. */
+  defaultMaxTokens?: string
+  /** Per-level thinking budgets; empty string per level means inherit. */
+  thinkingBudgets?: Partial<Record<string, string>>
+  /** Managed provider compat drafts. */
+  compat?: CompatDrafts
 }
 
 export interface SettingsOp {
@@ -69,6 +90,20 @@ export function parseAdaptiveThinking(value: unknown): AdaptiveThinkingMode {
   if (value === true) return 'enabled'
   if (value === false) return 'disabled'
   return 'inherit'
+}
+
+function parseCapacity(value: unknown): string {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? String(value) : ''
+}
+
+function parseThinkingBudgets(value: unknown): Partial<Record<string, string>> {
+  const source = asRecord(value)
+  const result: Partial<Record<string, string>> = {}
+  for (const level of ['minimal', 'low', 'medium', 'high'] as const) {
+    const entry = source[level]
+    if (typeof entry === 'number' && Number.isFinite(entry)) result[level] = String(entry)
+  }
+  return result
 }
 
 /**
@@ -112,6 +147,10 @@ export function parseProviderDraft(providerConfig: unknown): ProviderDraft {
     defaultInput: parseInput(cfg['defaultInput']),
     defaultReasoning: typeof reasoning === 'string' && (LEVELS as readonly string[]).includes(reasoning) ? reasoning : '',
     adaptiveThinking: parseAdaptiveThinking(compat['forceAdaptiveThinking']),
+    defaultContextWindow: parseCapacity(cfg['defaultContextWindow']),
+    defaultMaxTokens: parseCapacity(cfg['defaultMaxTokens']),
+    thinkingBudgets: parseThinkingBudgets(cfg['thinkingBudgets']),
+    compat: parseCompatDrafts(cfg['compat']),
   }
 }
 
@@ -141,6 +180,9 @@ export function parseModelDraft(modelConfig: unknown): ModelDraft {
     reasoningMode,
     efforts,
     wire,
+    contextWindow: parseCapacity(cfg['contextWindow']),
+    maxTokens: parseCapacity(cfg['maxTokens']),
+    compat: parseCompatDrafts(cfg['compat']),
   }
 }
 
@@ -241,12 +283,43 @@ export function reasoningEffortsFor(draft: ModelDraft, anthropic = false): unkno
   return result
 }
 
+function capacityValue(text: string | undefined): number | undefined {
+  if (text === undefined) return undefined
+  const trimmed = text.trim()
+  if (trimmed === '') return undefined
+  const value = Number(trimmed)
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`capacity must be a positive integer, got "${trimmed}"`)
+  }
+  return value
+}
+
+function thinkingBudgetsValue(
+  budgets: Partial<Record<string, string>> | undefined,
+): Record<string, number> | undefined {
+  if (budgets === undefined) return undefined
+  const result: Record<string, number> = {}
+  for (const [level, text] of Object.entries(budgets)) {
+    const trimmed = (text ?? '').trim()
+    if (trimmed === '') continue
+    const value = Number(trimmed)
+    if (!Number.isFinite(value)) {
+      throw new Error(`thinkingBudgets.${level} must be a finite number`)
+    }
+    result[level] = value
+  }
+  return Object.keys(result).length > 0 ? result : undefined
+}
+
 export function modelCapabilityFields(draft: ModelDraft, anthropic = false): Record<string, unknown> {
   const result: Record<string, unknown> = {}
-  const input = inputFor(draft.input)
-  if (input !== undefined) result['input'] = input
-  const efforts = reasoningEffortsFor(draft, anthropic)
-  if (efforts !== undefined) result['reasoningEfforts'] = efforts
+  // `input` and `reasoningEfforts` are always managed by the model draft:
+  // `undefined` means "explicitly inherit / unset". `contextWindow` and
+  // `maxTokens` are only managed when the draft carries the field at all.
+  result['input'] = inputFor(draft.input)
+  if (draft.contextWindow !== undefined) result['contextWindow'] = capacityValue(draft.contextWindow)
+  if (draft.maxTokens !== undefined) result['maxTokens'] = capacityValue(draft.maxTokens)
+  result['reasoningEfforts'] = reasoningEffortsFor(draft, anthropic)
   return result
 }
 
@@ -279,30 +352,59 @@ export function collectOpsForProvider(
   const ops: SettingsOp[] = []
   const cfg = asRecord(providerConfig)
   const base = ['providers', provider]
+
   const defaultInput = inputFor(draft.defaultInput)
   if (defaultInput !== undefined) {
     ops.push({ op: 'set', path: [...base, 'defaultInput'], value: defaultInput })
   } else if (cfg['defaultInput'] !== undefined) {
     ops.push({ op: 'unset', path: [...base, 'defaultInput'] })
   }
+
+  const defaultContextWindow = capacityValue(draft.defaultContextWindow)
+  if (defaultContextWindow !== undefined) {
+    ops.push({ op: 'set', path: [...base, 'defaultContextWindow'], value: defaultContextWindow })
+  } else if (cfg['defaultContextWindow'] !== undefined) {
+    ops.push({ op: 'unset', path: [...base, 'defaultContextWindow'] })
+  }
+
+  const defaultMaxTokens = capacityValue(draft.defaultMaxTokens)
+  if (defaultMaxTokens !== undefined) {
+    ops.push({ op: 'set', path: [...base, 'defaultMaxTokens'], value: defaultMaxTokens })
+  } else if (cfg['defaultMaxTokens'] !== undefined) {
+    ops.push({ op: 'unset', path: [...base, 'defaultMaxTokens'] })
+  }
+
   if (draft.defaultReasoning !== '') {
     ops.push({ op: 'set', path: [...base, 'reasoning'], value: draft.defaultReasoning })
   } else if (cfg['reasoning'] !== undefined) {
     ops.push({ op: 'unset', path: [...base, 'reasoning'] })
   }
-  ops.push(...collectOpsForAdaptiveThinking(provider, providerConfig, draft.adaptiveThinking))
+
+  const thinkingBudgets = thinkingBudgetsValue(draft.thinkingBudgets)
+  if (thinkingBudgets !== undefined) {
+    ops.push({ op: 'set', path: [...base, 'thinkingBudgets'], value: thinkingBudgets })
+  } else if (cfg['thinkingBudgets'] !== undefined) {
+    ops.push({ op: 'unset', path: [...base, 'thinkingBudgets'] })
+  }
+
+  const compatDrafts = draft.compat ?? (draft.adaptiveThinking !== undefined
+    ? { forceAdaptiveThinking: { kind: 'boolean' as const, mode: draft.adaptiveThinking } }
+    : undefined)
+  if (compatDrafts !== undefined) {
+    ops.push(...collectOpsForCompat([...base, 'compat'], cfg['compat'], compatDrafts))
+  }
   return ops
 }
 
 /**
  * Build precise model mutations.
  *
- * - `models[]` routes: only `input` / `reasoningEfforts` are touched on each
- *   entry; all non-plugin-owned fields survive because entries are cloned and
+ * - `models[]` routes: only plugin-owned fields are touched on each entry;
+ *   all non-plugin-owned fields survive because entries are cloned and
  *   mutated in place.
- * - `modelOverrides` routes: path-level `set`/`unset` for only
- *   `input` and `reasoningEfforts`; the whole override object is never
- *   replaced and the model key is never deleted.
+ * - `modelOverrides` routes: path-level `set`/`unset` for only plugin-owned
+ *   fields; the whole override object is never replaced and the model key is
+ *   never deleted.
  */
 export function collectOpsForModels(
   provider: string,
@@ -322,9 +424,17 @@ export function collectOpsForModels(
         entry = { id: model }
         current.push(entry)
       }
-      for (const key of ['input', 'reasoningEfforts']) {
+      for (const key of ['input', 'contextWindow', 'maxTokens', 'reasoningEfforts']) {
+        if (!Object.prototype.hasOwnProperty.call(fields, key)) continue
         if (fields[key] !== undefined) entry[key] = fields[key]
         else delete entry[key]
+      }
+      if (draft.compat !== undefined) {
+        const merged = mergeCompatDrafts(entry['compat'], draft.compat)
+        if (merged.changed) {
+          if (merged.value === undefined) delete entry['compat']
+          else entry['compat'] = merged.value
+        }
       }
     }
     ops.push({ op: 'set', path: ['providers', provider, 'models'], value: current })
@@ -333,16 +443,30 @@ export function collectOpsForModels(
     for (const [model, draft] of Object.entries(drafts)) {
       const fields = modelCapabilityFields(draft, anthropic)
       const base = ['providers', provider, 'modelOverrides', model]
-      for (const key of ['input', 'reasoningEfforts'] as const) {
+      for (const key of ['input', 'contextWindow', 'maxTokens', 'reasoningEfforts'] as const) {
+        if (!Object.prototype.hasOwnProperty.call(fields, key)) continue
         const path = [...base, key]
         if (fields[key] !== undefined) {
-          ops.push({ op: 'set', path, value: fields[key] })
+          const override = Object.prototype.hasOwnProperty.call(overrides, model)
+            ? asRecord(overrides[model])
+            : {}
+          // Capacity overrides are the fields most likely to be touched by a
+          // "resolved value" placeholder; never rewrite an equal value.
+          const equal = (key === 'contextWindow' || key === 'maxTokens')
+            && JSON.stringify(override[key]) === JSON.stringify(fields[key])
+          if (!equal) ops.push({ op: 'set', path, value: fields[key] })
         } else if (Object.prototype.hasOwnProperty.call(overrides, model)) {
           const override = asRecord(overrides[model])
           if (Object.prototype.hasOwnProperty.call(override, key)) {
             ops.push({ op: 'unset', path })
           }
         }
+      }
+      if (draft.compat !== undefined) {
+        const override = Object.prototype.hasOwnProperty.call(overrides, model)
+          ? asRecord(overrides[model])
+          : {}
+        ops.push(...collectOpsForCompat([...base, 'compat'], override['compat'], draft.compat))
       }
     }
   }

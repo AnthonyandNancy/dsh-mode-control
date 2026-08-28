@@ -18,14 +18,17 @@
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
-    "typescript": "^5.9.0",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
     "tsdown": "^0.22.14",
+    "typescript": "^5.9.0",
     "vitest": "^3.2.4"
   },
   "scripts": {
     "build": "bash scripts/build.sh",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build:client": "tsdown",
+    "typecheck:client": "tsc -p tsconfig.client.json --noEmit",
     "test": "vitest run"
   },
   "exports": {

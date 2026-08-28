@@ -545,3 +545,25 @@ describe('toAnthropicReasoningEfforts', () => {
     })
   })
 })
+
+describe('extended compat vocabulary', () => {
+  it('compiles future/requested compat keys without dropping them', () => {
+    const config: CapabilitiesAuthoringConfig = {
+      providers: {
+        acme: {
+          compat: {
+            supportsFinishReason: true,
+            chatTemplateArgs: { prompt: '<|prompt|>' },
+            supportsThinkingTokenBudget: false,
+          },
+        },
+      },
+    }
+    const [compiled] = compileCapabilities(config)
+    expect(compiled.compat).toEqual({
+      supportsFinishReason: true,
+      chatTemplateArgs: { prompt: '<|prompt|>' },
+      supportsThinkingTokenBudget: false,
+    })
+  })
+})

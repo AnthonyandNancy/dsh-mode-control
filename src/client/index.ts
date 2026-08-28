@@ -1,14 +1,13 @@
 /**
  * @deepseek-ai/dsh-llm-pi-ai-capabilities — client settings section.
  *
- * This page reads/writes the standard `llm-pi-ai` settings namespace. It does
- * not keep a second runtime config source: every save is a path op against the
- * native namespace, so llm-pi-ai's own resolveModel/stream behavior is what
- * applies the capability.
+ * Page order (spec):
+ * Provider Selector → Provider 默认能力 → Provider 推理能力 → 接口兼容性 →
+ * 子代理模型 → 模型列表 → 模型详情 → 恢复默认 / 保存能力.
  *
- * Scope decision: only llm-pi-ai's currently supported vocabulary is used.
- * No custom input modalities, no custom reasoning efforts, no provider-level
- * reasoning set, and no per-model default effort are written.
+ * Only native settings namespaces are written (`llm-pi-ai`,
+ * `dsh-mode-control.subagent`, `subagent-model-selection`); no custom RPC is
+ * invented and no second runtime config source is introduced.
  */
 
 import { createElement, useEffect, useRef, useState } from 'react'
@@ -31,9 +30,28 @@ import {
   type PiAiReasoningLevel,
   type ProviderDraft,
 } from './ops.ts'
+import { COMPAT_FIELDS, isCompatFieldApplicable, type CompatFieldDefinition } from './compat-fields.ts'
+import type { CompatDrafts } from './compat-state.ts'
+import { CompatDisclosure, CompatGroupSection } from './compat-ui.ts'
+import { collectRuntimeCapabilities, protocolsForProvider, schemaEnumValues, schemaObjectKeys, type RuntimeCapabilities } from './runtime-capabilities.ts'
+import { SubagentSettingsCard } from './subagent-ui.ts'
+import { SUBAGENT_MODEL_SELECTION_NAMESPACE, SUBAGENT_NAMESPACE } from '../subagent/constants.ts'
+import { Chip, Disclosure, Dropdown, Field, NumberInput, TextInput } from './ui.ts'
 
 const NS = 'settings.llm-pi-ai-capabilities'
 const PI_AI_NS = 'llm-pi-ai'
+
+interface SubagentControlState {
+  value: { agentOptions?: unknown; modelSelectionSettings?: boolean }
+  revision?: number
+  writable: boolean
+}
+
+interface NativeSubagentState {
+  value?: unknown
+  revision?: number
+  writable: boolean
+}
 
 interface CapabilitiesState {
   status: 'loading' | 'ready' | 'error'
@@ -45,8 +63,28 @@ interface CapabilitiesState {
   selectedProvider: string
   providerDrafts: Record<string, ProviderDraft>
   modelDrafts: Record<string, Record<string, ModelDraft>>
+  runtimeCaps: RuntimeCapabilities
+  subagentControl: SubagentControlState
+  nativeSubagent: NativeSubagentState
+  enumOptions: { maxTokensField: string[]; thinkingFormat: string[] }
   error?: string
   saved?: string
+}
+
+const EMPTY_RUNTIME_CAPS: RuntimeCapabilities = {
+  compatFields: new Set(),
+  providerFields: new Set(),
+  modelFields: new Set(),
+  subagent: {
+    visible: false,
+    effectiveVersion: undefined,
+    mode: 'unsupported',
+    supportsAgentOptions: true,
+    supportsReasoningEffort: false,
+    supportsNativeSelection: false,
+    supportsAllowedModels: false,
+    modelSelectionSettings: undefined,
+  },
 }
 
 const EMPTY_STATE: CapabilitiesState = {
@@ -59,6 +97,10 @@ const EMPTY_STATE: CapabilitiesState = {
   selectedProvider: '',
   providerDrafts: {},
   modelDrafts: {},
+  runtimeCaps: EMPTY_RUNTIME_CAPS,
+  subagentControl: { value: {}, writable: true },
+  nativeSubagent: { writable: true },
+  enumOptions: { maxTokensField: [], thinkingFormat: [] },
 }
 
 function modelListOf(
@@ -83,7 +125,6 @@ function modelListOf(
     return Object.keys(overrides)
   }
 
-  // Catalog fallback: only the group whose id matches the selected provider.
   for (const group of catalogGroups) {
     const g = asRecord(group)
     if (g['id'] !== provider) continue
@@ -116,112 +157,96 @@ function toggleValue(list: string[], value: string): string[] {
   return list.includes(value) ? list.filter(item => item !== value) : [...list, value]
 }
 
+function compatFieldsOf(group: string, advancedOnly: boolean): CompatFieldDefinition[] {
+  return COMPAT_FIELDS.filter(field => field.group === group && field.advanced === advancedOnly)
+}
+
+function compatApplicableMap(
+  fields: readonly CompatFieldDefinition[],
+  protocols: string[],
+  drafts: CompatDrafts,
+): { applicable: Record<string, boolean>; existing: Record<string, boolean> } {
+  const applicable: Record<string, boolean> = {}
+  const existing: Record<string, boolean> = {}
+  for (const field of fields) {
+    applicable[field.key] = isCompatFieldApplicable(field, protocols)
+    const draft = drafts[field.key]
+    existing[field.key] = draft !== undefined && (
+      (draft.kind === 'boolean' && draft.mode !== 'inherit') ||
+      (draft.kind === 'enum' && draft.value !== '') ||
+      (draft.kind === 'json' && draft.text.trim() !== '')
+    )
+  }
+  return { applicable, existing }
+}
+
+function reasoningEffortsOf(modelDraft: ModelDraft | undefined, providerDraft: ProviderDraft | undefined): string[] {
+  if (!modelDraft) return []
+  if (modelDraft.reasoningMode === 'unsupported') return []
+  if (modelDraft.reasoningMode === 'custom') return modelDraft.efforts
+  if (providerDraft?.defaultReasoning) return [providerDraft.defaultReasoning]
+  return []
+}
+
 function injectStyles(): void {
   const id = '@deepseek-ai/dsh-llm-pi-ai-capabilities/styles'
   if (typeof document === 'undefined' || document.querySelector(`style[data-plugin-css="${id}"]`)) return
   const css = `
-.dsh-mc-root{max-width:720px;color:var(--dsw-alias-label-primary);flex-direction:column;gap:12px;display:flex}
+.dsh-mc-root{max-width:760px;color:var(--dsw-alias-label-primary);flex-direction:column;gap:12px;display:flex}
 .dsh-mc-title{color:var(--dsw-alias-label-primary);margin:0;font-size:16px;font-weight:500;line-height:24px}
 .dsh-mc-intro{color:var(--dsw-alias-label-tertiary);margin:0;font-size:14px;line-height:22px}
 .dsh-mc-card{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;flex-direction:column;gap:12px;padding:12px 14px;display:flex}
+.dsh-mc-card-header{display:flex;justify-content:space-between;align-items:center;gap:8px}
 .dsh-mc-section-title{color:var(--dsw-alias-label-primary);margin:0;font-size:14px;font-weight:500;line-height:22px}
 .dsh-mc-field{flex-direction:column;gap:6px;display:flex}
-.dsh-mc-field-label{color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px}
-.dsh-mc-chips{flex-wrap:wrap;align-items:center;gap:6px;display:flex}
-.dsh-mc-chip{box-sizing:border-box;height:28px;cursor:pointer;border:1px solid var(--dsw-alias-border-l3);background:transparent;color:var(--dsw-alias-label-secondary);border-radius:14px;align-items:center;gap:4px;padding:0 12px;font-size:13px;line-height:20px;display:inline-flex}
-.dsh-mc-chip:hover{background:var(--dsw-alias-interactive-bg-hover)}
-.dsh-mc-chip-active{border-color:var(--dsw-alias-button-primary-fill);background:var(--dsw-alias-button-primary-dimmed);color:var(--dsw-alias-label-primary)}
-.dsh-mc-input{box-sizing:border-box;height:36px;width:100%;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);padding:0 12px;font-size:14px;line-height:22px}
-.dsh-mc-input::placeholder{color:var(--dsw-alias-label-tertiary)}
-.dsh-mc-dropdown{position:relative;display:inline-block}
-.dsh-mc-dropdown-button{box-sizing:border-box;height:36px;min-width:180px;cursor:pointer;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);align-items:center;gap:8px;padding:0 12px;font-size:14px;line-height:22px;display:inline-flex}
-.dsh-mc-dropdown-list{position:absolute;z-index:20;top:calc(100% + 4px);left:0;min-width:180px;max-height:280px;overflow:auto;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);border-radius:10px;box-shadow:var(--dsw-shadow-lv3);padding:4px;display:flex;flex-direction:column}
-.dsh-mc-dropdown-item{box-sizing:border-box;width:100%;cursor:pointer;border:none;background:transparent;color:var(--dsw-alias-label-primary);text-align:left;border-radius:8px;padding:6px 10px;font-size:14px;line-height:22px}
-.dsh-mc-dropdown-item:hover{background:var(--dsw-alias-interactive-bg-hover)}
-.dsh-mc-button{box-sizing:border-box;height:36px;cursor:pointer;border:1px solid var(--dsw-alias-border-l2);border-radius:18px;background:transparent;color:var(--dsw-alias-label-primary);align-items:center;gap:4px;padding:0 14px;font-size:14px;line-height:22px;display:inline-flex}
-.dsh-mc-button:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
-.dsh-mc-button-primary{background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground);border:none}
-.dsh-mc-button-danger{color:var(--dsw-alias-state-error-primary)}
-.dsh-mc-button:disabled{opacity:.5;cursor:default}
-.dsh-mc-split{flex-direction:row;gap:16px;display:flex}
-.dsh-mc-model-list{flex:none;width:220px;flex-direction:column;gap:6px;display:flex}
-.dsh-mc-model-item{box-sizing:border-box;width:100%;cursor:pointer;border:1px solid transparent;background:transparent;color:var(--dsw-alias-label-primary);text-align:left;border-radius:10px;padding:8px 10px;font-size:14px;line-height:22px;display:flex;flex-direction:column;gap:2px}
-.dsh-mc-model-item:hover{background:var(--dsw-alias-interactive-bg-hover)}
-.dsh-mc-model-item-active{border-color:var(--dsw-alias-border-l2);background:var(--dsw-alias-interactive-bg-active)}
-.dsh-mc-model-item-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.dsh-mc-model-item-desc{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.dsh-mc-model-detail{flex:1;min-width:0;flex-direction:column;gap:12px;display:flex}
-.dsh-mc-muted{color:var(--dsw-alias-label-tertiary)}
-.dsh-mc-wire-list{flex-direction:column;gap:6px;display:flex}
-.dsh-mc-wire-row{box-sizing:border-box;min-height:36px;flex-direction:row;align-items:center;gap:8px;display:flex}
-.dsh-mc-wire-label{flex:none;min-width:116px;color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px;white-space:nowrap}
-.dsh-mc-wire-input{box-sizing:border-box;height:36px;flex:1;min-width:0;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);padding:0 12px;font-size:14px;line-height:22px}
-.dsh-mc-wire-input::placeholder{color:var(--dsw-alias-label-tertiary)}
-.dsh-mc-error{color:var(--dsw-alias-state-error-primary);margin:0;font-size:13px;line-height:20px}
-.dsh-mc-saved{color:var(--dsw-alias-state-success-primary);margin:0;font-size:13px;line-height:20px}
-.dsh-mc-empty{color:var(--dsw-alias-label-tertiary);padding:8px 0}
-.dsh-mc-mode{margin:0;font-size:13px;line-height:20px}
-.dsh-mc-mode-native{color:var(--dsw-alias-label-tertiary)}
-.dsh-mc-mode-legacy{color:var(--dsw-alias-state-warning-primary,var(--dsw-alias-label-tertiary))}
-.dsh-mc-actions{flex-direction:row;align-items:center;gap:8px;display:flex}
-@media (max-width:720px){
-.dsh-mc-split{flex-direction:column}
-.dsh-mc-model-list{width:100%}
-}
+.dsh-mc-field-label{color:var(--dsw-alias-label-secondary);font-size:13px;font-weight:500;line-height:18px}
+.dsh-mc-muted{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
+.dsh-mc-error{color:var(--dsw-alias-danger-default);font-size:13px;line-height:18px;margin:0}
+.dsh-mc-saved{color:var(--dsw-alias-success-default);font-size:13px;line-height:18px;margin:0}
+.dsh-mc-empty{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:18px}
+.dsh-mc-chips{flex-wrap:wrap;gap:6px;display:flex}
+.dsh-mc-chip{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-background);color:var(--dsw-alias-label-secondary);border-radius:999px;padding:4px 12px;font-size:13px;cursor:pointer}
+.dsh-mc-chip-active{border-color:var(--dsw-alias-primary-default);color:var(--dsw-alias-primary-default);font-weight:500}
+.dsh-mc-input,.dsh-mc-textarea{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-background);color:var(--dsw-alias-label-primary);border-radius:8px;padding:7px 10px;font-size:13px;line-height:18px;box-sizing:border-box}
+.dsh-mc-textarea{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;resize:vertical;min-height:64px}
+.dsh-mc-input:focus,.dsh-mc-textarea:focus{outline:none;border-color:var(--dsw-alias-primary-default)}
+.dsh-mc-button{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-background);color:var(--dsw-alias-label-primary);border-radius:8px;padding:7px 14px;font-size:13px;cursor:pointer}
+.dsh-mc-button:hover{border-color:var(--dsw-alias-primary-default);color:var(--dsw-alias-primary-default)}
+.dsh-mc-link-button{background:none;border:none;color:var(--dsw-alias-primary-default);font-size:13px;cursor:pointer;padding:0}
+.dsh-mc-dropdown{position:relative;min-width:0}
+.dsh-mc-dropdown-button{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-background);color:var(--dsw-alias-label-primary);border-radius:8px;padding:7px 10px;font-size:13px;width:100%;display:flex;align-items:center;gap:8px;cursor:pointer}
+.dsh-mc-dropdown-list{position:absolute;z-index:10;top:calc(100% + 4px);left:0;right:0;max-height:240px;overflow:auto;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-background);border-radius:8px;padding:4px;box-shadow:0 4px 16px rgb(0 0 0 / 12%)}
+.dsh-mc-dropdown-item{display:block;width:100%;text-align:left;border:none;background:none;color:var(--dsw-alias-label-primary);padding:6px 8px;border-radius:6px;font-size:13px;cursor:pointer}
+.dsh-mc-dropdown-item:hover{background:var(--dsw-alias-fill-hover)}
+.dsh-mc-mode{font-size:13px;line-height:20px;margin:0}
+.dsh-mc-mode-native{color:var(--dsw-alias-success-default)}
+.dsh-mc-mode-legacy{color:var(--dsw-alias-warning-default)}
+.dsh-mc-split{display:flex;gap:12px;align-items:flex-start}
+.dsh-mc-model-list{flex:0 0 220px;flex-direction:column;gap:4px;display:flex}
+.dsh-mc-model-item{border:1px solid transparent;background:none;color:var(--dsw-alias-label-secondary);border-radius:8px;padding:8px 10px;text-align:left;cursor:pointer;display:flex;flex-direction:column;gap:2px}
+.dsh-mc-model-item-active{border-color:var(--dsw-alias-primary-default);color:var(--dsw-alias-label-primary);background:var(--dsw-alias-fill-hover)}
+.dsh-mc-model-item-name{font-size:13px;font-weight:500}
+.dsh-mc-model-item-desc{font-size:12px;color:var(--dsw-alias-label-tertiary)}
+.dsh-mc-model-detail{flex:1;min-width:0}
+.dsh-mc-disclosure{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:8px 10px}
+.dsh-mc-disclosure-summary{color:var(--dsw-alias-label-secondary);font-size:13px;font-weight:500;cursor:pointer}
+.dsh-mc-disclosure-body{margin-top:10px;flex-direction:column;gap:10px;display:flex}
+.dsh-mc-disclosure-fields{flex-direction:column;gap:10px;display:flex}
+.dsh-mc-subagent-status{font-size:12px;color:var(--dsw-alias-label-tertiary);border:1px solid var(--dsw-alias-border-l2);border-radius:999px;padding:2px 10px}
+.dsh-mc-subagent-body{flex-direction:column;gap:10px;display:flex}
+.dsh-mc-tag{border:1px solid var(--dsw-alias-border-l2);border-radius:999px;padding:2px 10px;font-size:12px;color:var(--dsw-alias-label-secondary)}
+.dsh-mc-subagent-selected{flex-wrap:wrap;gap:6px;display:flex;align-items:center}
+.dsh-mc-subagent-pool{flex-direction:column;gap:8px;display:flex}
+.dsh-mc-pool-list{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;max-height:260px;overflow:auto;padding:8px}
+.dsh-mc-pool-provider{flex-direction:column;gap:4px;display:flex;padding:4px 0}
+.dsh-mc-pool-provider-name{font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary)}
+.dsh-mc-pool-row{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--dsw-alias-label-primary);cursor:pointer}
 `
   const tag = document.createElement('style')
   tag.dataset.plugin = '@deepseek-ai/dsh-llm-pi-ai-capabilities'
   tag.dataset.pluginCss = id
   tag.textContent = css
   document.head.appendChild(tag)
-}
-
-function Chip(props: any): any {
-  const { label, active, onClick } = props
-  return createElement('button', {
-    type: 'button',
-    className: `dsh-mc-chip${active ? ' dsh-mc-chip-active' : ''}`,
-    onClick,
-  }, label)
-}
-
-function Dropdown(props: any): any {
-  const { value, options, onChange, placeholder, ariaLabel } = props
-  const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    if (!open) return
-    const onDoc = (event: MouseEvent): void => {
-      if (ref.current && !ref.current.contains(event.target as Node)) setOpen(false)
-    }
-    document.addEventListener('mousedown', onDoc)
-    return () => document.removeEventListener('mousedown', onDoc)
-  }, [open])
-  const selected = options.find((option: any) => option.value === value)
-  return createElement('div', { ref, className: 'dsh-mc-dropdown' },
-    createElement('button', {
-      type: 'button',
-      className: 'dsh-mc-dropdown-button',
-      'aria-label': ariaLabel,
-      'aria-expanded': open,
-      onClick: () => setOpen(!open),
-    },
-      createElement('span', { style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, selected?.label ?? placeholder ?? ''),
-      createElement('span', { style: { flex: 'none', opacity: 0.7 } }, '▾'),
-    ),
-    open ? createElement('div', { className: 'dsh-mc-dropdown-list' },
-      options.map((option: any) => createElement('button', {
-        key: option.value,
-        type: 'button',
-        className: 'dsh-mc-dropdown-item',
-        style: option.value === value ? { fontWeight: 600 } : undefined,
-        onClick: () => {
-          onChange(option.value)
-          setOpen(false)
-        },
-      }, option.label)),
-    ) : null,
-  )
 }
 
 function ModeStatus(props: any): any {
@@ -307,6 +332,30 @@ function CapabilitiesSection(props: any): any {
       }
       const nextModels = Object.keys(modelDrafts[selectedProvider] ?? {})
       const nextModel = nextModels.includes(selectedModelRef.current) ? selectedModelRef.current : (nextModels[0] ?? '')
+
+      const subagentView = namespaces.find((item: any) => asRecord(item)['ns'] === SUBAGENT_NAMESPACE)
+      const subagentRecord = subagentView === undefined ? undefined : asRecord(subagentView)
+      const subagentValue = subagentRecord ? asRecord(subagentRecord['value']) : {}
+      const nativeView = namespaces.find((item: any) => asRecord(item)['ns'] === SUBAGENT_MODEL_SELECTION_NAMESPACE)
+      const nativeRecord = nativeView === undefined ? undefined : asRecord(nativeView)
+
+      const runtimeCaps = collectRuntimeCapabilities(schema, hostVersion, {
+        runtime: {
+          effectiveVersion: typeof subagentValue['effectiveVersion'] === 'string' ? subagentValue['effectiveVersion'] as string : undefined,
+          toolSubagentSchemaFields: Array.isArray(subagentValue['toolSubagentSchemaFields'])
+            ? (subagentValue['toolSubagentSchemaFields'] as string[])
+            : undefined,
+          agentOptionsSchemaFields: Array.isArray(subagentValue['agentOptionsSchemaFields'])
+            ? (subagentValue['agentOptionsSchemaFields'] as string[])
+            : undefined,
+          modelSelectionSettings: typeof subagentValue['modelSelectionSettings'] === 'boolean'
+            ? subagentValue['modelSelectionSettings'] as boolean
+            : undefined,
+        },
+        modelSelectionNamespacePresent: nativeRecord !== undefined,
+        modelSelectionNamespaceFields: nativeRecord ? schemaObjectKeys(nativeRecord['schema'], []) : undefined,
+      })
+
       setState({
         status: 'ready',
         writable: result.value?.writable !== false,
@@ -317,6 +366,26 @@ function CapabilitiesSection(props: any): any {
         providerDrafts,
         modelDrafts,
         dshMode: detectDshMode(hostVersion, schema),
+        runtimeCaps,
+        subagentControl: {
+          value: {
+            agentOptions: subagentValue['agentOptions'],
+            modelSelectionSettings: typeof subagentValue['modelSelectionSettings'] === 'boolean'
+              ? subagentValue['modelSelectionSettings'] as boolean
+              : undefined,
+          },
+          revision: subagentRecord ? subagentRecord['revision'] as number | undefined : undefined,
+          writable: subagentRecord ? subagentRecord['writable'] !== false : false,
+        },
+        nativeSubagent: {
+          value: nativeRecord ? nativeRecord['value'] : undefined,
+          revision: nativeRecord ? nativeRecord['revision'] as number | undefined : undefined,
+          writable: nativeRecord ? nativeRecord['writable'] !== false : false,
+        },
+        enumOptions: {
+          maxTokensField: schemaEnumValues(schema, ['providers', 'inner', 'compat', 'maxTokensField']),
+          thinkingFormat: schemaEnumValues(schema, ['providers', 'inner', 'compat', 'thinkingFormat']),
+        },
       })
       setSelectedModel(nextModel)
     } catch (error: any) {
@@ -365,7 +434,28 @@ function CapabilitiesSection(props: any): any {
   }
 
   const resetModel = (): void => {
-    updateModelDraft({ input: [], reasoningMode: 'inherit', efforts: [], wire: {} })
+    updateModelDraft({ input: [], reasoningMode: 'inherit', efforts: [], wire: {}, contextWindow: '', maxTokens: '', compat: {} })
+  }
+
+  const resetProvider = (): void => {
+    const provider = state.selectedProvider
+    if (!provider) return
+    setState(prev => ({
+      ...prev,
+      providerDrafts: {
+        ...prev.providerDrafts,
+        [provider]: {
+          ...prev.providerDrafts[provider],
+          defaultInput: [],
+          defaultReasoning: '',
+          adaptiveThinking: 'inherit',
+          defaultContextWindow: '',
+          defaultMaxTokens: '',
+          thinkingBudgets: {},
+          compat: {},
+        },
+      },
+    }))
   }
 
   const toggleReasoningLevel = (level: string): void => {
@@ -400,6 +490,21 @@ function CapabilitiesSection(props: any): any {
     updateModelDraft({
       wire: { ...draft.wire, [level]: normalized },
     })
+  }
+
+  const updateProviderCompat = (key: string, value: any): void => {
+    const provider = state.selectedProvider
+    const draft = state.providerDrafts[provider]
+    if (!provider || !draft) return
+    updateProviderDraft({ compat: { ...draft.compat, [key]: value } })
+  }
+
+  const updateModelCompat = (key: string, value: any): void => {
+    const provider = state.selectedProvider
+    const model = activeModelRef.current
+    const draft = provider ? state.modelDrafts[provider]?.[model] : undefined
+    if (!provider || !model || !draft) return
+    updateModelDraft({ compat: { ...draft.compat, [key]: value } })
   }
 
   const save = (): void => {
@@ -449,6 +554,7 @@ function CapabilitiesSection(props: any): any {
   const provider = state.selectedProvider
   const providerDraft = state.providerDrafts[provider]
   const anthropic = isAnthropicProvider(provider, state.providers[provider], state.catalogGroups)
+  const protocols = protocolsForProvider(provider, state.providers[provider], state.catalogGroups)
   const modelDrafts = state.modelDrafts[provider] ?? {}
   const modelIds = Object.keys(modelDrafts)
   const filteredModelIds = search.trim() === ''
@@ -457,6 +563,17 @@ function CapabilitiesSection(props: any): any {
   const activeModel = selectedModel && filteredModelIds.includes(selectedModel) ? selectedModel : (filteredModelIds[0] ?? '')
   activeModelRef.current = activeModel
   const activeDraft = activeModel ? modelDrafts[activeModel] : undefined
+  const activeCompatDrafts = activeDraft?.compat ?? {}
+
+  const providerCompat = providerDraft?.compat ?? {}
+  const providerCommon = compatFieldsOf('common', false)
+  const providerAdvanced = compatFieldsOf('advanced', true)
+  const providerAnthropic = compatFieldsOf('anthropic', false)
+  const providerCommonMap = compatApplicableMap(providerCommon, protocols, providerCompat)
+  const providerAdvancedMap = compatApplicableMap(providerAdvanced, protocols, providerCompat)
+  const providerAnthropicMap = compatApplicableMap(providerAnthropic, protocols, providerCompat)
+  const modelCompatFields = COMPAT_FIELDS
+  const modelCompatMap = compatApplicableMap(modelCompatFields, protocols, activeCompatDrafts)
 
   const resolvedInput = (() => {
     if (activeDraft && activeDraft.input.length > 0) return activeDraft.input
@@ -464,13 +581,7 @@ function CapabilitiesSection(props: any): any {
     return ['text']
   })()
 
-  const resolvedReasoning = (() => {
-    if (!activeDraft) return []
-    if (activeDraft.reasoningMode === 'unsupported') return []
-    if (activeDraft.reasoningMode === 'custom') return activeDraft.efforts
-    if (providerDraft && providerDraft.defaultReasoning !== '') return [providerDraft.defaultReasoning]
-    return []
-  })()
+  const resolvedReasoning = reasoningEffortsOf(activeDraft, providerDraft)
 
   const resolvedSource = (() => {
     if (!activeDraft) return ''
@@ -478,6 +589,21 @@ function CapabilitiesSection(props: any): any {
     if (providerDraft && (providerDraft.defaultInput.length > 0 || providerDraft.defaultReasoning !== '')) return t('sourceProvider')
     return t('sourceUnknown')
   })()
+
+  const modelsByProvider: Record<string, string[]> = {}
+  const reasoningEffortsByModel: Record<string, string[]> = {}
+  for (const name of providerNames) {
+    const ids = modelListOf(name, state.providers[name], state.catalogGroups)
+    modelsByProvider[name] = ids
+    for (const model of ids) {
+      const draft = state.modelDrafts[name]?.[model]
+      reasoningEffortsByModel[`${name}\u0000${model}`] = draft?.efforts ?? []
+    }
+  }
+  const providerSupportsAgentOptions: Record<string, boolean> = {}
+  for (const providerSnapshot of state.runtimeCaps.subagent.providers ?? []) {
+    providerSupportsAgentOptions[providerSnapshot.name] = providerSnapshot.supportsAgentOptions
+  }
 
   return h('div', { className: 'dsh-mc-root' },
     h('h2', { className: 'dsh-mc-title' }, t('nav')),
@@ -495,9 +621,12 @@ function CapabilitiesSection(props: any): any {
       }),
     ),
 
+    // Provider default capabilities.
     providerDraft ? h('div', { className: 'dsh-mc-card' },
-      h('h3', { className: 'dsh-mc-section-title' }, t('providerDefaults')),
-      h(ModeStatus, { mode: state.dshMode, t }),
+      h('div', { className: 'dsh-mc-card-header' },
+        h('h3', { className: 'dsh-mc-section-title' }, t('providerDefaults')),
+        h(ModeStatus, { mode: state.dshMode, t }),
+      ),
       h('div', { className: 'dsh-mc-field' },
         h('span', { className: 'dsh-mc-field-label' }, t('inputCapability')),
         h('div', { className: 'dsh-mc-chips' },
@@ -509,6 +638,29 @@ function CapabilitiesSection(props: any): any {
           })),
         ),
       ),
+      state.runtimeCaps.providerFields.has('defaultContextWindow') ? h('div', { className: 'dsh-mc-field' },
+        h('span', { className: 'dsh-mc-field-label' }, t('defaultContextWindow')),
+        h(NumberInput, {
+          value: providerDraft.defaultContextWindow ?? '',
+          onChange: (value: string) => updateProviderDraft({ defaultContextWindow: value }),
+          placeholder: t('inherit'),
+          ariaLabel: t('defaultContextWindow'),
+        }),
+      ) : null,
+      state.runtimeCaps.providerFields.has('defaultMaxTokens') ? h('div', { className: 'dsh-mc-field' },
+        h('span', { className: 'dsh-mc-field-label' }, t('defaultMaxTokens')),
+        h(NumberInput, {
+          value: providerDraft.defaultMaxTokens ?? '',
+          onChange: (value: string) => updateProviderDraft({ defaultMaxTokens: value }),
+          placeholder: t('inherit'),
+          ariaLabel: t('defaultMaxTokens'),
+        }),
+      ) : null,
+    ) : null,
+
+    // Provider reasoning.
+    providerDraft ? h('div', { className: 'dsh-mc-card' },
+      h('h3', { className: 'dsh-mc-section-title' }, t('reasoningCapabilities')),
       h('div', { className: 'dsh-mc-field' },
         h('span', { className: 'dsh-mc-field-label' }, t('defaultReasoning')),
         h(Dropdown, {
@@ -537,7 +689,75 @@ function CapabilitiesSection(props: any): any {
           ariaLabel: t('anthropicReasoningEffort'),
         }),
       ) : null,
+      h(Disclosure, { summary: t('thinkingBudgets') },
+        ['minimal', 'low', 'medium', 'high'].map(level => h('div', { key: level, className: 'dsh-mc-field' },
+          h('span', { className: 'dsh-mc-field-label' }, levelLabel(level)),
+          h(NumberInput, {
+            value: providerDraft.thinkingBudgets?.[level] ?? '',
+            onChange: (value: string) => {
+              const budgets = { ...providerDraft.thinkingBudgets }
+              if (value.trim() === '') delete budgets[level]
+              else budgets[level] = value
+              updateProviderDraft({ thinkingBudgets: budgets })
+            },
+            placeholder: t('inherit'),
+            ariaLabel: level,
+          }),
+        )),
+      ),
     ) : null,
+
+    // Interface compatibility (provider level).
+    providerDraft ? h('div', { className: 'dsh-mc-card' },
+      h('h3', { className: 'dsh-mc-section-title' }, t('interfaceCompatibility')),
+      h(CompatGroupSection, {
+        fields: providerCommon,
+        drafts: providerCompat,
+        applicable: providerCommonMap.applicable,
+        existing: providerCommonMap.existing,
+        enumOptions: state.enumOptions,
+        level: 'provider',
+        t,
+        onChange: updateProviderCompat,
+      }),
+      h(CompatDisclosure, {
+        summary: t('advancedCompatibility'),
+        fields: providerAdvanced,
+        drafts: providerCompat,
+        applicable: providerAdvancedMap.applicable,
+        existing: providerAdvancedMap.existing,
+        enumOptions: state.enumOptions,
+        level: 'provider',
+        t,
+        onChange: updateProviderCompat,
+      }),
+      h(CompatDisclosure, {
+        summary: t('anthropicCompatibility'),
+        fields: providerAnthropic,
+        drafts: providerCompat,
+        applicable: providerAnthropicMap.applicable,
+        existing: providerAnthropicMap.existing,
+        enumOptions: state.enumOptions,
+        level: 'provider',
+        t,
+        onChange: updateProviderCompat,
+      }),
+    ) : null,
+
+    h(SubagentSettingsCard, {
+      t,
+      api,
+      capabilities: state.runtimeCaps.subagent,
+      controlValue: state.subagentControl.value,
+      controlRevision: state.subagentControl.revision,
+      controlWritable: state.subagentControl.writable,
+      nativeNamespace: state.nativeSubagent,
+      providerNames,
+      modelsByProvider,
+      reasoningEffortsByModel,
+      providerSupportsAgentOptions,
+      onApplied: () => void load(),
+    }),
 
     h('div', { className: 'dsh-mc-field' },
       h('span', { className: 'dsh-mc-field-label' }, t('models')),
@@ -573,7 +793,10 @@ function CapabilitiesSection(props: any): any {
           ),
           activeDraft ? h('div', { className: 'dsh-mc-model-detail' },
             h('div', { className: 'dsh-mc-card' },
-              h('h3', { className: 'dsh-mc-section-title' }, activeModel),
+              h('div', { className: 'dsh-mc-card-header' },
+                h('h3', { className: 'dsh-mc-section-title' }, activeModel),
+                h('button', { type: 'button', className: 'dsh-mc-link-button', onClick: resetModel }, t('resetModel')),
+              ),
               h('div', { className: 'dsh-mc-field' },
                 h('span', { className: 'dsh-mc-field-label' }, t('inputCapability')),
                 h('div', { className: 'dsh-mc-chips' },
@@ -601,162 +824,411 @@ function CapabilitiesSection(props: any): any {
                   h(Chip, {
                     label: t('custom'),
                     active: activeDraft.reasoningMode === 'custom',
-                    onClick: () => updateModelDraft({ reasoningMode: 'custom', efforts: activeDraft.efforts.length > 0 ? activeDraft.efforts : ['low'] }),
+                    onClick: () => updateModelDraft({ reasoningMode: 'custom', efforts: activeDraft.efforts.length > 0 ? activeDraft.efforts : ['medium'], wire: activeDraft.wire }),
                   }),
                 ),
               ),
-              activeDraft.reasoningMode === 'custom'
-                ? h('div', { className: 'dsh-mc-field' },
-                    h('span', { className: 'dsh-mc-field-label' }, t('reasoningLevels')),
-                    h('div', { className: 'dsh-mc-chips' },
-                      LEVELS.map(level => h(Chip, {
-                        key: level,
-                        label: levelLabel(level),
-                        active: activeDraft.efforts.includes(level),
-                        onClick: () => toggleReasoningLevel(level),
-                      })),
-                    ),
-                  )
-                : null,
-              activeDraft.reasoningMode === 'inherit'
-                ? h('p', { className: 'dsh-mc-muted', style: { margin: 0 } }, t('inheritCatalogWire'))
-                : null,
-              activeDraft.reasoningMode === 'custom'
-                ? h('div', { className: 'dsh-mc-field' },
-                    h('span', { className: 'dsh-mc-field-label' }, t('reasoningWireValues')),
-                    h('div', { className: 'dsh-mc-wire-list' },
-                      LEVELS.filter(level => activeDraft.efforts.includes(level)).map(level => h('div', {
-                        key: level,
-                        className: 'dsh-mc-wire-row',
-                      },
-                        h('span', { className: 'dsh-mc-wire-label' }, `${levelLabel(level)} →`),
-                        h('input', {
-                          className: 'dsh-mc-wire-input',
-                          value: reasoningWireFor(activeDraft, level as PiAiReasoningLevel, anthropic) ?? '',
-                          placeholder: level === 'off' ? 'null' : '',
-                          'aria-label': `${levelLabel(level)} wire value`,
-                          onChange: (event: any) => updateReasoningWire(level, event.target.value),
-                        }),
-                      )),
-                    ),
-                  )
-                : null,
+              activeDraft.reasoningMode === 'custom' ? h('div', { className: 'dsh-mc-field' },
+                h('span', { className: 'dsh-mc-field-label' }, t('reasoningLevels')),
+                h('div', { className: 'dsh-mc-chips' },
+                  LEVELS.map(level => h(Chip, {
+                    key: level,
+                    label: levelLabel(level),
+                    active: activeDraft.efforts.includes(level),
+                    onClick: () => toggleReasoningLevel(level),
+                  })),
+                ),
+              ) : null,
+              activeDraft.reasoningMode === 'custom' ? h('div', { className: 'dsh-mc-field' },
+                h('span', { className: 'dsh-mc-field-label' }, t('reasoningWire')),
+                activeDraft.efforts.map(level => h('div', { key: level, className: 'dsh-mc-field' },
+                  h('span', { className: 'dsh-mc-field-label' }, levelLabel(level)),
+                  h(TextInput, {
+                    value: reasoningWireFor(activeDraft, level as PiAiReasoningLevel, anthropic) ?? '',
+                    onChange: (value: string) => updateReasoningWire(level, value),
+                    placeholder: t('inherit'),
+                    ariaLabel: level,
+                  }),
+                )),
+              ) : null,
+              state.runtimeCaps.modelFields.has('contextWindow') ? h('div', { className: 'dsh-mc-field' },
+                h('span', { className: 'dsh-mc-field-label' }, t('modelContextWindow')),
+                h(NumberInput, {
+                  value: activeDraft.contextWindow ?? '',
+                  onChange: (value: string) => updateModelDraft({ contextWindow: value }),
+                  placeholder: t('inherit'),
+                  ariaLabel: t('modelContextWindow'),
+                }),
+              ) : null,
+              state.runtimeCaps.modelFields.has('maxTokens') ? h('div', { className: 'dsh-mc-field' },
+                h('span', { className: 'dsh-mc-field-label' }, t('modelMaxTokens')),
+                h(NumberInput, {
+                  value: activeDraft.maxTokens ?? '',
+                  onChange: (value: string) => updateModelDraft({ maxTokens: value }),
+                  placeholder: t('inherit'),
+                  ariaLabel: t('modelMaxTokens'),
+                }),
+              ) : null,
               h('div', { className: 'dsh-mc-field' },
                 h('span', { className: 'dsh-mc-field-label' }, t('resolvedCapability')),
-                h('div', { className: 'dsh-mc-muted' },
-                  `${t('inputCapability')}: ${resolvedInput.map(modalityLabel).join(' · ')}`,
-                ),
-                h('div', { className: 'dsh-mc-muted' },
-                  `${t('reasoningCapability')}: ${resolvedReasoning.length > 0 ? resolvedReasoning.map(levelLabel).join(' · ') : (activeDraft.reasoningMode === 'unsupported' ? t('unsupported') : t('unknown'))}`,
-                ),
-                h('div', { className: 'dsh-mc-muted' }, `${t('source')}: ${resolvedSource}`),
+                h('p', { className: 'dsh-mc-muted', style: { margin: 0 } },
+                  `${t('input')}: ${resolvedInput.join(', ')} · ${t('reasoning')}: ${resolvedReasoning.join(', ') || t('inherit')} · ${t('source')}: ${resolvedSource}`),
               ),
-            ),
-            h('div', { className: 'dsh-mc-actions' },
-              h('button', { type: 'button', className: 'dsh-mc-button', onClick: resetModel }, t('reset')),
-              h('button', { type: 'button', className: 'dsh-mc-button dsh-mc-button-primary', onClick: save }, t('save')),
+              h(Disclosure, { summary: t('modelCompatDisclosure') },
+                h('div', { className: 'dsh-mc-disclosure-fields' },
+                  h(CompatGroupSection, {
+                    fields: modelCompatFields.filter(field => field.group === 'common'),
+                    drafts: activeCompatDrafts,
+                    applicable: modelCompatMap.applicable,
+                    existing: modelCompatMap.existing,
+                    enumOptions: state.enumOptions,
+                    level: 'model',
+                    t,
+                    onChange: updateModelCompat,
+                  }),
+                  h(CompatDisclosure, {
+                    summary: t('advancedCompatibility'),
+                    fields: modelCompatFields.filter(field => field.group === 'advanced'),
+                    drafts: activeCompatDrafts,
+                    applicable: modelCompatMap.applicable,
+                    existing: modelCompatMap.existing,
+                    enumOptions: state.enumOptions,
+                    level: 'model',
+                    t,
+                    onChange: updateModelCompat,
+                  }),
+                  h(CompatDisclosure, {
+                    summary: t('anthropicCompatibility'),
+                    fields: modelCompatFields.filter(field => field.group === 'anthropic'),
+                    drafts: activeCompatDrafts,
+                    applicable: modelCompatMap.applicable,
+                    existing: modelCompatMap.existing,
+                    enumOptions: state.enumOptions,
+                    level: 'model',
+                    t,
+                    onChange: updateModelCompat,
+                  }),
+                ),
+              ),
             ),
           ) : null,
         ),
+
+    h('div', { className: 'dsh-mc-field', style: { flexDirection: 'row', gap: 8 } },
+      h('button', { type: 'button', className: 'dsh-mc-button', onClick: resetProvider }, t('resetProvider')),
+      h('button', { type: 'button', className: 'dsh-mc-button', onClick: save }, t('save')),
+    ),
   )
 }
 
 export const inject = ['slots', 'locale', 'connection', 'remote']
 
-const zh = {
+const zh: Record<string, string> = {
+  nav: '模型能力',
+  pageDescription: '管理 DSH 模型能力、推理能力与接口兼容性。所有修改仅写入原生配置，不修改适配器源码。',
   loading: '加载中…',
-  nav: '模型能力增强',
-  pageDescription: '配置第三方模型的输入与思考能力。',
-  provider: '提供商',
-  providerDefaults: '提供商默认能力',
-  modeNative: '✓ DSH rc.8 原生支持，无需 Adapter 补丁',
-  modeLegacyRc6Title: 'DSH rc.6 兼容模式',
-  modeLegacyRc6Detail: '需应用 rc.6 Adapter 补丁后生效',
-  modeLegacyRc7Title: 'DSH rc.7 兼容模式',
-  modeLegacyRc7Detail: '需应用 rc.7 Adapter 补丁后生效',
-  modeLegacyTitle: 'DSH 旧版兼容模式',
-  modeLegacyDetail: '需应用对应版本的 Adapter 补丁后生效',
-  models: '模型',
-  searchModels: '搜索模型',
-  inputCapability: '输入能力',
-  reasoningCapability: '思考能力',
-  reasoningLevels: '思考档位',
-  reasoningWireValues: '思考档位 → 上游 wire value',
-  inheritCatalogWire: '继承 pi-ai Catalog（wire mapping 由运行时决定）',
-  defaultReasoning: '默认思考程度',
-  anthropicReasoningEffort: 'Anthropic 思考等级透传',
-  anthropicReasoningEffortDescription: '启用后使用 Adaptive Thinking，将当前思考档位通过 output_config.effort 发送到 Anthropic Messages 上游。',
-  adaptiveEnabled: '启用',
-  adaptiveDisabled: '禁用',
-  inherit: '继承',
-  custom: '自定义',
-  unsupported: '不支持',
-  unknown: '未声明',
-  reset: '恢复默认设置',
-  save: '保存能力配置',
-  saved: '已保存，llm-pi-ai 将在下一次请求生效。',
-  noProviders: '当前没有已配置的 llm-pi-ai Provider。请先前往“模型”设置添加 Provider。',
-  noModels: '当前 Provider 尚未配置模型。请先前往“模型”设置添加模型。',
   loadFailed: '加载失败',
   retry: '重试',
-  readOnly: '当前 Settings 为只读。',
-  namespaceMissing: 'llm-pi-ai 命名空间未注册。',
-  summaryInherit: '继承 Provider 默认能力',
-  summaryCustom: '自定义',
-  summaryUnsupported: '不支持',
-  resolvedCapability: '最终生效能力',
+  readOnly: '当前部署为只读模式。',
+  namespaceMissing: 'llm-pi-ai 设置命名空间未注册。',
+  provider: '提供方',
+  providerDefaults: '提供方默认能力',
+  reasoningCapabilities: '推理能力',
+  interfaceCompatibility: '接口兼容性',
+  advancedCompatibility: '高级兼容性',
+  anthropicCompatibility: 'Anthropic 兼容性',
+  modelCompatDisclosure: '兼容性覆盖',
+  inputCapability: '输入能力',
+  defaultReasoning: '默认推理等级',
+  inherit: '继承',
+  saved: '已保存',
+  save: '保存能力',
+  resetProvider: '恢复提供方默认',
+  resetModel: '恢复默认',
+  models: '模型',
+  searchModels: '搜索模型…',
+  noModels: '没有可用模型',
+  noProviders: '没有配置提供方',
+  input: '输入',
+  reasoning: '推理',
   source: '来源',
-  sourceOverride: 'Model Override',
-  sourceProvider: 'Provider Default',
-  sourceUnknown: '未声明',
+  sourceOverride: '模型覆盖',
+  sourceProvider: '提供方默认',
+  sourceUnknown: '未知',
+  summaryInherit: '继承提供方',
+  summaryCustom: '自定义',
+  summaryUnsupported: '不支持推理',
+  modeNative: '原生模式 (rc.8) — 无需适配器补丁。',
+  modeLegacyRc6Title: '旧版兼容模式 (rc.6)',
+  modeLegacyRc6Detail: '需配套适配器补丁：不支持原生 settings 语义，能力配置只起提示作用。',
+  modeLegacyRc7Title: '旧版兼容模式 (rc.7)',
+  modeLegacyRc7Detail: '需配套适配器补丁：已支持原生 settings，但缺少部分 rc.8 字段。',
+  modeLegacyTitle: '旧版兼容模式',
+  modeLegacyDetail: '无法精确判定 rc 版本，请按文档确认适配器补丁。',
+  adaptiveEnabled: '启用',
+  adaptiveDisabled: '禁用',
+  anthropicReasoningEffort: 'Anthropic 自适应推理',
+  anthropicReasoningEffortDescription: '写入 compat.forceAdaptiveThinking。',
+  thinkingBudgets: '推理预算',
+  defaultContextWindow: '默认上下文窗口',
+  defaultMaxTokens: '默认最大输出',
+  modelContextWindow: '上下文窗口覆盖',
+  modelMaxTokens: '最大输出覆盖',
+  reasoningLevels: '推理等级',
+  reasoningWire: '推理等级线值',
+  resolvedCapability: '解析后能力',
+  'subagent.title': '子代理模型',
+  'subagent.legacy.description': '固定模型模式：为新子代理实例写入 provider/model/maxTokens。',
+  'subagent.native.description': '动态模型选择：使用官方 subagent-model-selection 命名空间。',
+  'subagent.status.legacy': '固定模型',
+  'subagent.status.native': '动态选择',
+  'subagent.defaultBehavior': '默认行为',
+  'subagent.inheritMain': '继承主模型',
+  'subagent.fixedModel': '固定子代理模型',
+  'subagent.provider': '子代理提供方',
+  'subagent.model': '子代理模型',
+  'subagent.maxTokens': '最大输出 tokens',
+  'subagent.maxTokensPlaceholder': '留空继承',
+  'subagent.reasoningEffort': '推理等级',
+  'subagent.reasoning.auto': '自动',
+  'subagent.effectiveNote': '保存后对新建子代理会话生效。',
+  'subagent.backendManagesModel': '该子代理后端由其运行时自身管理模型配置。',
+  'subagent.apply': '应用子代理设置',
+  'subagent.savedNewSessions': '已保存，对新的子代理会话生效。',
+  'subagent.applyFailed': '保存失败',
+  'subagent.readonly': '子代理设置当前为只读。',
+  'subagent.modelSelectionNotEnabled': '动态模型选择尚未启用。',
+  'subagent.enableModelSelection': '启用动态模型选择',
+  'subagent.modelSelectionConfigRequired': '需要 DSH 配置启用子代理模型选择功能。',
+  'subagent.enableDynamicSelection': '启用动态选择',
+  'subagent.allowedModels': '允许的模型池',
+  'subagent.allowedModels.description': '子代理可在此池中自行选择模型。',
+  'subagent.allowedModels.emptySummary': '尚未选择模型',
+  'subagent.allowedModels.empty': '启用动态选择时至少需要一个模型。',
+  'subagent.allowedModels.duplicate': '模型池中存在重复的 提供方/模型 组合。',
+  'subagent.allowedModels.incomplete': '模型池中存在未填完整的条目。',
+  'subagent.editPool': '编辑模型池',
+  'subagent.doneEditingPool': '完成',
+  'subagent.searchPool': '搜索模型…',
+  'subagent.defaultModelDisclosure': '默认模型（高级）',
+  'subagent.defaultModelNote': '动态选择启用后，可通过上方固定模型设置指定默认模型；留空继承主模型。',
+  'subagent.selectProvider': '选择提供方',
+  'subagent.selectModel': '选择模型',
+  'compat.providerAuto': '自动',
+  'compat.modelInheritProvider': '继承提供方',
+  'compat.auto': '自动',
+  'compat.enabled': '开启',
+  'compat.disabled': '关闭',
+  'compat.notApplicableWarning': '当前协议未使用此配置；已有值已保留，可在此清除。',
+  'compat.format.auto': '自动',
+  'compat.role.auto': '自动',
+  'compat.role.inheritProvider': '继承提供方',
+  'compat.role.developer': 'Developer',
+  'compat.role.system': 'System',
+  'compat.supportsStore.label': '支持 Store',
+  'compat.supportsStore.description': '兼容 OpenAI Store 能力标记。',
+  'compat.supportsDeveloperRole.label': '开发者角色',
+  'compat.supportsDeveloperRole.description': 'OpenAI 兼容接口的角色取值：自动 / Developer / System。',
+  'compat.supportsReasoningEffort.label': '支持 reasoning_effort',
+  'compat.supportsReasoningEffort.description': '兼容 OpenAI reasoning_effort 参数。',
+  'compat.supportsUsageInStreaming.label': '流式返回 usage',
+  'compat.supportsUsageInStreaming.description': '流式响应中返回 usage 数据。',
+  'compat.supportsFinishReason.label': '支持 finish_reason',
+  'compat.supportsFinishReason.description': '流式响应中返回 finish_reason。',
+  'compat.maxTokensField.label': 'max_tokens 字段',
+  'compat.maxTokensField.description': '请求使用的 token 参数字段名。',
+  'compat.requiresToolResultName.label': '工具结果需名称',
+  'compat.requiresToolResultName.description': '工具结果消息要求 name 字段。',
+  'compat.requiresAssistantAfterToolResult.label': '工具结果后需 assistant',
+  'compat.requiresAssistantAfterToolResult.description': '工具结果后要求 assistant 消息。',
+  'compat.requiresThinkingAsText.label': '思考以文本返回',
+  'compat.requiresThinkingAsText.description': '思考内容以文本消息返回。',
+  'compat.requiresReasoningContentOnAssistantMessages.label': 'assistant 消息需 reasoning_content',
+  'compat.requiresReasoningContentOnAssistantMessages.description': 'assistant 消息要求 reasoning_content 字段。',
+  'compat.thinkingFormat.label': '思考格式',
+  'compat.thinkingFormat.description': '思考内容的返回格式。',
+  'compat.supportsThinkingTokenBudget.label': '支持 thinking token 预算',
+  'compat.supportsThinkingTokenBudget.description': '兼容 thinking token 预算参数。',
+  'compat.supportsStrictMode.label': '支持 strict mode',
+  'compat.supportsStrictMode.description': '兼容严格模式开关。',
+  'compat.supportsLongCacheRetention.label': '支持长缓存保留',
+  'compat.supportsLongCacheRetention.description': '兼容长缓存保留策略。',
+  'compat.chatTemplateKwargs.label': 'chatTemplate 参数',
+  'compat.chatTemplateKwargs.description': 'JSON 对象，合并到 chat template 关键字参数。',
+  'compat.chatTemplateArgs.label': 'chatTemplate 位置参数',
+  'compat.chatTemplateArgs.description': 'JSON 对象，合并到 chat template 位置参数。',
+  'compat.cacheControlFormat.label': '缓存控制格式',
+  'compat.cacheControlFormat.description': 'Anthropic 缓存控制字段格式。',
+  'compat.eagerToolInput.label': '预填充工具输入',
+  'compat.eagerToolInput.description': '工具输入在请求中预填充。',
+  'compat.cacheControlOnTools.label': '工具使用缓存控制',
+  'compat.cacheControlOnTools.description': '工具定义支持缓存控制。',
+  'compat.temperature.label': 'temperature 参数',
+  'compat.temperature.description': 'Anthropic 兼容接口的温度参数。',
+  'compat.forceAdaptiveThinking.label': '强制自适应思考',
+  'compat.forceAdaptiveThinking.description': '强制启用 adaptive thinking。',
+  'compat.allowEmptySignature.label': '允许空签名',
+  'compat.allowEmptySignature.description': '允许空工具签名。',
+  'compat.supportsStrictTools.label': '支持严格工具模式',
+  'compat.supportsStrictTools.description': '兼容严格工具模式。',
+  'compat.requiresExactFormatting.label': '要求精确格式化',
+  'compat.requiresExactFormatting.description': '要求消息精确格式化。',
+  'compat.supportsStreaming.label': '支持流式',
+  'compat.supportsStreaming.description': '兼容流式响应。',
 }
 
-const en = {
-  loading: 'Loading…',
+const en: Record<string, string> = {
   nav: 'Model Capabilities',
-  pageDescription: 'Configure input and reasoning capabilities for third-party models.',
-  provider: 'Provider',
-  providerDefaults: 'Provider Defaults',
-  modeNative: '✓ Native support · DSH rc.8',
-  modeLegacyRc6Title: 'Legacy compatibility · DSH rc.6',
-  modeLegacyRc6Detail: 'Requires rc.6 adapter patch',
-  modeLegacyRc7Title: 'Legacy compatibility · DSH rc.7',
-  modeLegacyRc7Detail: 'Requires rc.7 adapter patch',
-  modeLegacyTitle: 'Legacy compatibility',
-  modeLegacyDetail: 'Requires the matching adapter patch',
-  models: 'Models',
-  searchModels: 'Search models',
-  inputCapability: 'Input',
-  reasoningCapability: 'Reasoning',
-  reasoningLevels: 'Reasoning Levels',
-  reasoningWireValues: 'Reasoning Level → Upstream Wire Value',
-  inheritCatalogWire: 'Inherit pi-ai Catalog (wire mapping resolved at runtime)',
-  defaultReasoning: 'Default Reasoning',
-  anthropicReasoningEffort: 'Anthropic Reasoning Effort',
-  anthropicReasoningEffortDescription: 'Use adaptive thinking and send the selected reasoning level through output_config.effort to Anthropic Messages providers.',
-  adaptiveEnabled: 'Enabled',
-  adaptiveDisabled: 'Disabled',
-  inherit: 'Inherit',
-  custom: 'Custom',
-  unsupported: 'Unsupported',
-  unknown: 'Unknown',
-  reset: 'Restore defaults',
-  save: 'Save capabilities',
-  saved: 'Saved; changes apply to the next llm-pi-ai request.',
-  noProviders: 'No llm-pi-ai providers are configured. Add one in the Models settings first.',
-  noModels: 'This provider has no configured models yet. Add models in the Models settings first.',
+  pageDescription: 'Manage DSH model capabilities, reasoning and wire compatibility. Writes native settings only — never patches adapter sources.',
+  loading: 'Loading…',
   loadFailed: 'Failed to load',
   retry: 'Retry',
   readOnly: 'Settings are read-only in this deployment.',
   namespaceMissing: 'The llm-pi-ai settings namespace is not registered.',
-  summaryInherit: 'Inherits provider defaults',
-  summaryCustom: 'Custom',
-  summaryUnsupported: 'Unsupported',
-  resolvedCapability: 'Resolved Capability',
+  provider: 'Provider',
+  providerDefaults: 'Provider Defaults',
+  reasoningCapabilities: 'Reasoning',
+  interfaceCompatibility: 'Interface Compatibility',
+  advancedCompatibility: 'Advanced Compatibility',
+  anthropicCompatibility: 'Anthropic Compatibility',
+  modelCompatDisclosure: 'Compatibility Overrides',
+  inputCapability: 'Input capability',
+  defaultReasoning: 'Default reasoning',
+  inherit: 'Inherit',
+  saved: 'Saved',
+  save: 'Save capabilities',
+  resetProvider: 'Reset provider',
+  resetModel: 'Reset model',
+  models: 'Models',
+  searchModels: 'Search models…',
+  noModels: 'No models available',
+  noProviders: 'No providers configured',
+  input: 'Input',
+  reasoning: 'Reasoning',
   source: 'Source',
   sourceOverride: 'Model Override',
   sourceProvider: 'Provider Default',
   sourceUnknown: 'Unknown',
+  summaryInherit: 'Inherits provider defaults',
+  summaryCustom: 'Custom',
+  summaryUnsupported: 'Unsupported',
+  modeNative: 'Native mode (rc.8) — no adapter patch required.',
+  modeLegacyRc6Title: 'Legacy compatibility (rc.6)',
+  modeLegacyRc6Detail: 'Requires the matching adapter patch; native settings semantics are unavailable.',
+  modeLegacyRc7Title: 'Legacy compatibility (rc.7)',
+  modeLegacyRc7Detail: 'Requires the matching adapter patch; some rc.8 fields are missing.',
+  modeLegacyTitle: 'Legacy compatibility',
+  modeLegacyDetail: 'Exact rc could not be determined; confirm the adapter patch version.',
+  adaptiveEnabled: 'Enabled',
+  adaptiveDisabled: 'Disabled',
+  anthropicReasoningEffort: 'Anthropic adaptive thinking',
+  anthropicReasoningEffortDescription: 'Writes compat.forceAdaptiveThinking.',
+  thinkingBudgets: 'Thinking budgets',
+  defaultContextWindow: 'Default context window',
+  defaultMaxTokens: 'Default max output tokens',
+  modelContextWindow: 'Context window override',
+  modelMaxTokens: 'Max output tokens override',
+  reasoningLevels: 'Reasoning levels',
+  reasoningWire: 'Reasoning wire values',
+  resolvedCapability: 'Resolved capability',
+  'subagent.title': 'Subagent Models',
+  'subagent.legacy.description': 'Fixed model mode: writes provider/model/maxTokens for new subagent instances.',
+  'subagent.native.description': 'Dynamic selection: uses the official subagent-model-selection namespace.',
+  'subagent.status.legacy': 'Fixed model',
+  'subagent.status.native': 'Dynamic selection',
+  'subagent.defaultBehavior': 'Default behavior',
+  'subagent.inheritMain': 'Inherit main model',
+  'subagent.fixedModel': 'Fixed subagent model',
+  'subagent.provider': 'Subagent provider',
+  'subagent.model': 'Subagent model',
+  'subagent.maxTokens': 'Max output tokens',
+  'subagent.maxTokensPlaceholder': 'Leave empty to inherit',
+  'subagent.reasoningEffort': 'Reasoning effort',
+  'subagent.reasoning.auto': 'Auto',
+  'subagent.effectiveNote': 'Applies to newly created subagent sessions.',
+  'subagent.backendManagesModel': 'This subagent backend manages model configuration in its own runtime.',
+  'subagent.apply': 'Apply subagent settings',
+  'subagent.savedNewSessions': 'Saved — applies to new subagent sessions.',
+  'subagent.applyFailed': 'Failed to save',
+  'subagent.readonly': 'Subagent settings are read-only.',
+  'subagent.modelSelectionNotEnabled': 'Dynamic model selection is not enabled yet.',
+  'subagent.enableModelSelection': 'Enable dynamic model selection',
+  'subagent.modelSelectionConfigRequired': 'DSH configuration must enable subagent model selection.',
+  'subagent.enableDynamicSelection': 'Enable dynamic selection',
+  'subagent.allowedModels': 'Allowed model pool',
+  'subagent.allowedModels.description': 'Subagents may choose models from this pool.',
+  'subagent.allowedModels.emptySummary': 'No models selected yet',
+  'subagent.allowedModels.empty': 'Dynamic selection needs at least one model.',
+  'subagent.allowedModels.duplicate': 'Duplicate provider/model entries in the pool.',
+  'subagent.allowedModels.incomplete': 'Incomplete provider/model entries in the pool.',
+  'subagent.editPool': 'Edit pool',
+  'subagent.doneEditingPool': 'Done',
+  'subagent.searchPool': 'Search models…',
+  'subagent.defaultModelDisclosure': 'Default model (advanced)',
+  'subagent.defaultModelNote': 'When dynamic selection is enabled, the fixed-model settings above can define a default; leave empty to inherit the main model.',
+  'subagent.selectProvider': 'Select provider',
+  'subagent.selectModel': 'Select model',
+  'compat.providerAuto': 'Auto',
+  'compat.modelInheritProvider': 'Inherit provider',
+  'compat.auto': 'Auto',
+  'compat.enabled': 'Enabled',
+  'compat.disabled': 'Disabled',
+  'compat.notApplicableWarning': 'This field is not used by the current protocol; the existing value is kept and can be cleared here.',
+  'compat.format.auto': 'Auto',
+  'compat.role.auto': 'Auto',
+  'compat.role.inheritProvider': 'Inherit provider',
+  'compat.role.developer': 'Developer',
+  'compat.role.system': 'System',
+  'compat.supportsStore.label': 'Supports store',
+  'compat.supportsStore.description': 'OpenAI store capability flag.',
+  'compat.supportsDeveloperRole.label': 'Developer role',
+  'compat.supportsDeveloperRole.description': 'Role value for OpenAI-compatible APIs: auto / developer / system.',
+  'compat.supportsReasoningEffort.label': 'Supports reasoning_effort',
+  'compat.supportsReasoningEffort.description': 'Accepts the OpenAI reasoning_effort parameter.',
+  'compat.supportsUsageInStreaming.label': 'Streaming usage',
+  'compat.supportsUsageInStreaming.description': 'Includes usage data in streaming responses.',
+  'compat.supportsFinishReason.label': 'Supports finish_reason',
+  'compat.supportsFinishReason.description': 'Includes finish_reason in streaming responses.',
+  'compat.maxTokensField.label': 'max_tokens field',
+  'compat.maxTokensField.description': 'Token parameter name used in requests.',
+  'compat.requiresToolResultName.label': 'Tool result requires name',
+  'compat.requiresToolResultName.description': 'Tool result messages must include a name.',
+  'compat.requiresAssistantAfterToolResult.label': 'Assistant after tool result',
+  'compat.requiresAssistantAfterToolResult.description': 'Assistant message required after tool results.',
+  'compat.requiresThinkingAsText.label': 'Thinking as text',
+  'compat.requiresThinkingAsText.description': 'Thinking content is returned as a text message.',
+  'compat.requiresReasoningContentOnAssistantMessages.label': 'Reasoning content on assistant messages',
+  'compat.requiresReasoningContentOnAssistantMessages.description': 'Assistant messages require reasoning_content.',
+  'compat.thinkingFormat.label': 'Thinking format',
+  'compat.thinkingFormat.description': 'Format used for thinking content.',
+  'compat.supportsThinkingTokenBudget.label': 'Supports thinking token budget',
+  'compat.supportsThinkingTokenBudget.description': 'Accepts thinking token budget parameters.',
+  'compat.supportsStrictMode.label': 'Supports strict mode',
+  'compat.supportsStrictMode.description': 'Accepts strict mode toggles.',
+  'compat.supportsLongCacheRetention.label': 'Supports long cache retention',
+  'compat.supportsLongCacheRetention.description': 'Accepts long cache retention policies.',
+  'compat.chatTemplateKwargs.label': 'chatTemplate kwargs',
+  'compat.chatTemplateKwargs.description': 'JSON object merged into chat template keyword arguments.',
+  'compat.chatTemplateArgs.label': 'chatTemplate args',
+  'compat.chatTemplateArgs.description': 'JSON object merged into chat template positional arguments.',
+  'compat.cacheControlFormat.label': 'Cache control format',
+  'compat.cacheControlFormat.description': 'Anthropic cache control field format.',
+  'compat.eagerToolInput.label': 'Eager tool input',
+  'compat.eagerToolInput.description': 'Tool inputs are pre-filled in the request.',
+  'compat.cacheControlOnTools.label': 'Cache control on tools',
+  'compat.cacheControlOnTools.description': 'Tool definitions support cache control.',
+  'compat.temperature.label': 'temperature parameter',
+  'compat.temperature.description': 'Temperature for Anthropic-compatible APIs.',
+  'compat.forceAdaptiveThinking.label': 'Force adaptive thinking',
+  'compat.forceAdaptiveThinking.description': 'Force adaptive thinking on.',
+  'compat.allowEmptySignature.label': 'Allow empty signature',
+  'compat.allowEmptySignature.description': 'Allow empty tool signatures.',
+  'compat.supportsStrictTools.label': 'Supports strict tools',
+  'compat.supportsStrictTools.description': 'Accepts strict tool mode.',
+  'compat.requiresExactFormatting.label': 'Requires exact formatting',
+  'compat.requiresExactFormatting.description': 'Requires exact message formatting.',
+  'compat.supportsStreaming.label': 'Supports streaming',
+  'compat.supportsStreaming.description': 'Accepts streaming responses.',
 }
 
 export function apply(ctx: any): void {

@@ -60,6 +60,7 @@ export interface CompatCapabilityAuthoring {
   supportsDeveloperRole?: boolean
   supportsReasoningEffort?: boolean
   supportsUsageInStreaming?: boolean
+  supportsFinishReason?: boolean
   maxTokensField?: string
   requiresToolResultName?: boolean
   requiresAssistantAfterToolResult?: boolean
@@ -67,6 +68,8 @@ export interface CompatCapabilityAuthoring {
   requiresReasoningContentOnAssistantMessages?: boolean
   thinkingFormat?: string
   chatTemplateKwargs?: Record<string, unknown>
+  chatTemplateArgs?: Record<string, unknown>
+  supportsThinkingTokenBudget?: boolean
   supportsStrictMode?: boolean
   cacheControlFormat?: string
   supportsLongCacheRetention?: boolean
