@@ -85,6 +85,33 @@ describe('validateCapabilities', () => {
       },
     })).toThrow(/no per-model default effort/)
   })
+
+  it('rejects non-positive or non-integer model capacities', () => {
+    expect(() => validateCapabilities({
+      providers: { acme: { models: { a: { contextWindow: 0 } } } },
+    })).toThrow(/positive integer/)
+    expect(() => validateCapabilities({
+      providers: { acme: { models: { a: { maxTokens: -1 } } } },
+    })).toThrow(/positive integer/)
+    expect(() => validateCapabilities({
+      providers: { acme: { models: { a: { contextWindow: 1.5 } } } },
+    })).toThrow(/positive integer/)
+  })
+
+  it('rejects non-positive or non-integer provider capacities', () => {
+    expect(() => validateCapabilities({
+      providers: { acme: { defaults: { defaultContextWindow: 0 } } },
+    })).toThrow(/positive integer/)
+    expect(() => validateCapabilities({
+      providers: { acme: { defaults: { defaultMaxTokens: -1 } } },
+    })).toThrow(/positive integer/)
+  })
+
+  it('rejects non-numeric thinking budgets', () => {
+    expect(() => validateCapabilities({
+      providers: { acme: { defaults: { thinkingBudgets: { low: 'lots' as never } } } },
+    })).toThrow(/finite number/)
+  })
 })
 
 describe('toReasoningEfforts', () => {
@@ -280,6 +307,156 @@ describe('compileCapabilities', () => {
       supportsTemperature: false,
       supportsStrictTools: true,
       forceAdaptiveThinking: true,
+    })
+  })
+
+  it('compiles provider default capacities and thinking budgets', () => {
+    const config: CapabilitiesAuthoringConfig = {
+      providers: {
+        acme: {
+          defaults: {
+            defaultContextWindow: 200000,
+            defaultMaxTokens: 64000,
+            thinkingBudgets: { minimal: 16000, low: 16000, medium: 32000, high: 64000 },
+          },
+        },
+      },
+    }
+    const [compiled] = compileCapabilities(config)
+    expect(compiled.defaultContextWindow).toBe(200000)
+    expect(compiled.defaultMaxTokens).toBe(64000)
+    expect(compiled.thinkingBudgets).toEqual({ minimal: 16000, low: 16000, medium: 32000, high: 64000 })
+  })
+
+  it('compiles model capacities into catalog overrides', () => {
+    const config: CapabilitiesAuthoringConfig = {
+      providers: {
+        acme: {
+          models: {
+            'gpt-5': { contextWindow: 128000, maxTokens: 64000 },
+          },
+        },
+      },
+    }
+    const [compiled] = compileCapabilities(config)
+    expect(compiled.modelOverrides?.['gpt-5']).toEqual({ contextWindow: 128000, maxTokens: 64000 })
+  })
+
+  it('compiles model capacities into declared models', () => {
+    const config: CapabilitiesAuthoringConfig = {
+      providers: {
+        acme: {
+          models: {
+            vision: { contextWindow: 200000, maxTokens: 64000 },
+          },
+        },
+      },
+    }
+    const [compiled] = compileCapabilities(config, { declaredRoutes: new Set(['acme']) })
+    expect(compiled.models).toEqual([{ id: 'vision', contextWindow: 200000, maxTokens: 64000 }])
+  })
+})
+
+describe('compat vocabulary', () => {
+  it('compiles every current compat key with its persisted value kind', () => {
+    const config: CapabilitiesAuthoringConfig = {
+      providers: {
+        acme: {
+          compat: {
+            supportsStore: true,
+            supportsDeveloperRole: false,
+            supportsReasoningEffort: true,
+            supportsUsageInStreaming: true,
+            maxTokensField: 'outputTokens',
+            requiresToolResultName: false,
+            requiresAssistantAfterToolResult: true,
+            requiresThinkingAsText: true,
+            requiresReasoningContentOnAssistantMessages: false,
+            thinkingFormat: 'openai',
+            chatTemplateKwargs: { system: '<|system|>' },
+            supportsStrictMode: true,
+            cacheControlFormat: 'anthropic',
+            supportsLongCacheRetention: false,
+            supportsEagerToolInputStreaming: true,
+            supportsCacheControlOnTools: false,
+            supportsTemperature: true,
+            forceAdaptiveThinking: false,
+            allowEmptySignature: true,
+            supportsStrictTools: true,
+          },
+        },
+      },
+    }
+    const [compiled] = compileCapabilities(config)
+    expect(compiled.compat).toEqual({
+      supportsStore: true,
+      supportsDeveloperRole: false,
+      supportsReasoningEffort: true,
+      supportsUsageInStreaming: true,
+      maxTokensField: 'outputTokens',
+      requiresToolResultName: false,
+      requiresAssistantAfterToolResult: true,
+      requiresThinkingAsText: true,
+      requiresReasoningContentOnAssistantMessages: false,
+      thinkingFormat: 'openai',
+      chatTemplateKwargs: { system: '<|system|>' },
+      supportsStrictMode: true,
+      cacheControlFormat: 'anthropic',
+      supportsLongCacheRetention: false,
+      supportsEagerToolInputStreaming: true,
+      supportsCacheControlOnTools: false,
+      supportsTemperature: true,
+      forceAdaptiveThinking: false,
+      allowEmptySignature: true,
+      supportsStrictTools: true,
+    })
+  })
+
+  it('lets model top-level compat win per key over reasoning compat', () => {
+    const config: CapabilitiesAuthoringConfig = {
+      providers: {
+        acme: {
+          models: {
+            foo: {
+              compat: { forceAdaptiveThinking: true, supportsTemperature: false },
+              reasoning: {
+                efforts: ['low'],
+                compat: { forceAdaptiveThinking: false, supportsStrictTools: true },
+              },
+            },
+          },
+        },
+      },
+    }
+    const [compiled] = compileCapabilities(config)
+    expect(compiled.modelOverrides?.foo?.compat).toEqual({
+      forceAdaptiveThinking: true,
+      supportsTemperature: false,
+      supportsStrictTools: true,
+    })
+  })
+
+  it('preserves unknown typed compat keys as boolean, string, and record', () => {
+    const config: CapabilitiesAuthoringConfig = {
+      providers: {
+        acme: {
+          models: {
+            foo: {
+              compat: {
+                futureFlag: true,
+                futureEnum: 'custom',
+                futureRecord: { nested: { count: 3 } },
+              },
+            },
+          },
+        },
+      },
+    }
+    const [compiled] = compileCapabilities(config)
+    expect(compiled.modelOverrides?.foo?.compat).toEqual({
+      futureFlag: true,
+      futureEnum: 'custom',
+      futureRecord: { nested: { count: 3 } },
     })
   })
 })

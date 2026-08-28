@@ -17,6 +17,7 @@ import {
   type ProviderCapabilityAuthoring,
   type PiAiReasoningEfforts,
   type PiAiReasoningLevel,
+  type PiAiThinkingBudgets,
 } from './types.ts'
 
 export const ALL_REASONING_LEVELS: readonly PiAiReasoningLevel[] = PI_AI_REASONING_LEVELS
@@ -56,7 +57,7 @@ export class CapabilityValidationError extends Error {
 function mergeCompat(
   ...sources: Array<CompatCapabilityAuthoring | undefined>
 ): CompatCapabilityAuthoring | undefined {
-  const result: Record<string, unknown> = {}
+  const result: CompatCapabilityAuthoring = {}
   let has = false
   for (const source of sources) {
     if (!source) continue
@@ -65,7 +66,7 @@ function mergeCompat(
       if (value !== undefined) result[key] = value
     }
   }
-  return has ? result as CompatCapabilityAuthoring : undefined
+  return has ? result : undefined
 }
 
 function assertValidInput(input: readonly PiAiModality[] | undefined, where: string): void {
@@ -137,6 +138,25 @@ function assertValidReasoning(
   }
 }
 
+function assertPositiveInteger(value: number | undefined, where: string, field: string): void {
+  if (value === undefined) return
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    throw new CapabilityValidationError(`${where}: ${field} must be a positive integer`)
+  }
+}
+
+function assertValidThinkingBudgets(
+  budgets: PiAiThinkingBudgets | undefined,
+  where: string,
+): void {
+  if (budgets === undefined) return
+  for (const [level, value] of Object.entries(budgets)) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      throw new CapabilityValidationError(`${where}: thinkingBudgets.${level} must be a finite number`)
+    }
+  }
+}
+
 /**
  * Convert an authoring reasoning block into the native `reasoningEfforts` dict.
  */
@@ -183,6 +203,8 @@ function compileModelCapability(
   defaults: ProviderCapabilityAuthoring['defaults'],
 ): {
   input?: PiAiModality[]
+  contextWindow?: number
+  maxTokens?: number
   reasoningEfforts?: PiAiReasoningEfforts | false
   compat?: CompatCapabilityAuthoring
 } {
@@ -191,6 +213,8 @@ function compileModelCapability(
   // field, so it must NOT be copied onto every model entry.
   const input = capability.input
   assertValidInput(input, where)
+  assertPositiveInteger(capability.contextWindow, where, 'contextWindow')
+  assertPositiveInteger(capability.maxTokens, where, 'maxTokens')
   const reasoning = capability.reasoning ?? defaults?.reasoning
   assertValidReasoning(reasoning, where)
 
@@ -213,10 +237,14 @@ function compileModelCapability(
 
   const result: {
     input?: PiAiModality[]
+    contextWindow?: number
+    maxTokens?: number
     reasoningEfforts?: PiAiReasoningEfforts | false
     compat?: CompatCapabilityAuthoring
   } = {}
   if (input !== undefined) result.input = [...input]
+  if (capability.contextWindow !== undefined) result.contextWindow = capability.contextWindow
+  if (capability.maxTokens !== undefined) result.maxTokens = capability.maxTokens
   if (reasoning === false) {
     result.reasoningEfforts = false
   } else if (reasoning !== undefined) {
@@ -240,6 +268,21 @@ export function validateCapabilities(config: CapabilitiesAuthoringConfig): void 
     if (providerConfig.defaults?.reasoning !== undefined) {
       assertValidReasoning(providerConfig.defaults.reasoning, `provider "${provider}" defaults`)
     }
+    if (providerConfig.defaults?.defaultContextWindow !== undefined) {
+      assertPositiveInteger(
+        providerConfig.defaults.defaultContextWindow,
+        `provider "${provider}" defaults`,
+        'defaultContextWindow',
+      )
+    }
+    if (providerConfig.defaults?.defaultMaxTokens !== undefined) {
+      assertPositiveInteger(
+        providerConfig.defaults.defaultMaxTokens,
+        `provider "${provider}" defaults`,
+        'defaultMaxTokens',
+      )
+    }
+    assertValidThinkingBudgets(providerConfig.defaults?.thinkingBudgets, `provider "${provider}" defaults`)
     for (const [model, capability] of Object.entries(providerConfig.models ?? {})) {
       if (model.length === 0) {
         throw new CapabilityValidationError(`provider "${provider}" has a model with an empty id`)
@@ -268,6 +311,15 @@ export function compileCapabilities(
     const compiled: CompiledProviderCapabilities = { provider }
     if (providerConfig.defaults?.input !== undefined) {
       compiled.defaultInput = [...providerConfig.defaults.input]
+    }
+    if (providerConfig.defaults?.defaultContextWindow !== undefined) {
+      compiled.defaultContextWindow = providerConfig.defaults.defaultContextWindow
+    }
+    if (providerConfig.defaults?.defaultMaxTokens !== undefined) {
+      compiled.defaultMaxTokens = providerConfig.defaults.defaultMaxTokens
+    }
+    if (providerConfig.defaults?.thinkingBudgets !== undefined) {
+      compiled.thinkingBudgets = { ...providerConfig.defaults.thinkingBudgets }
     }
     if (providerConfig.defaults?.reasoning !== undefined && providerConfig.defaults.reasoning !== false) {
       // Route-level `reasoning` is a default effort, not a supported-effort set.

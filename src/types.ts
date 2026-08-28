@@ -23,13 +23,26 @@ export const PI_AI_REASONING_LEVELS = [
 export type PiAiReasoningLevel = (typeof PI_AI_REASONING_LEVELS)[number]
 
 /**
- * Three-state authoring mode for Anthropic adaptive thinking:
+ * Shared three-state authoring mode for optional booleans:
  *
  * - `inherit`   → field is absent / not configured (not the same as disabled)
- * - `enabled`   → `forceAdaptiveThinking: true`
- * - `disabled`  → `forceAdaptiveThinking: false`
+ * - `enabled`   → persisted `true`
+ * - `disabled`  → persisted `false`
  */
-export type AdaptiveThinkingMode = 'inherit' | 'enabled' | 'disabled'
+export type InheritBooleanMode = 'inherit' | 'enabled' | 'disabled'
+
+/**
+ * Three-state authoring mode for Anthropic adaptive thinking. This is the
+ * generic {@link InheritBooleanMode} specialised for `forceAdaptiveThinking`.
+ */
+export type AdaptiveThinkingMode = InheritBooleanMode
+
+/**
+ * A persisted compat value: a boolean switch, an enum string, or a JSON
+ * record. `any` is deliberately forbidden here so unknown/future compat keys
+ * stay typed as one of these three kinds.
+ */
+export type CompatCapabilityValue = boolean | string | Record<string, unknown>
 
 /**
  * Compat switches the capability editor may carry.
@@ -37,11 +50,33 @@ export type AdaptiveThinkingMode = 'inherit' | 'enabled' | 'disabled'
  * `forceAdaptiveThinking` is the single source of truth for Anthropic
  * Messages adaptive thinking. It is tri-state at the settings layer: absent
  * means inherit, `true` means enabled, and `false` means explicitly disabled.
+ *
+ * The known keys mirror the current runtime compat vocabulary; the index
+ * signature preserves unknown/future keys as typed compat values instead of
+ * dropping them or degrading to `any`.
  */
 export interface CompatCapabilityAuthoring {
-  thinkingFormat?: string
+  supportsStore?: boolean
+  supportsDeveloperRole?: boolean
   supportsReasoningEffort?: boolean
+  supportsUsageInStreaming?: boolean
+  maxTokensField?: string
+  requiresToolResultName?: boolean
+  requiresAssistantAfterToolResult?: boolean
+  requiresThinkingAsText?: boolean
+  requiresReasoningContentOnAssistantMessages?: boolean
+  thinkingFormat?: string
+  chatTemplateKwargs?: Record<string, unknown>
+  supportsStrictMode?: boolean
+  cacheControlFormat?: string
+  supportsLongCacheRetention?: boolean
+  supportsEagerToolInputStreaming?: boolean
+  supportsCacheControlOnTools?: boolean
+  supportsTemperature?: boolean
   forceAdaptiveThinking?: boolean
+  allowEmptySignature?: boolean
+  supportsStrictTools?: boolean
+  [key: string]: CompatCapabilityValue | undefined
 }
 
 /**
@@ -63,6 +98,10 @@ export interface CompatCapabilityAuthoring {
  */
 export interface ModelCapabilityAuthoring {
   input?: readonly PiAiModality[]
+  /** Model context window capacity in tokens (positive integer). */
+  contextWindow?: number
+  /** Model maximum output tokens (positive integer). */
+  maxTokens?: number
   /**
    * Optional pass-through compat switches.
    * Writes into the model's `compat` block. This is the canonical model-level
@@ -109,6 +148,12 @@ export interface ProviderCapabilityAuthoring {
   /** Provider-wide defaults; model fields override them. */
   defaults?: {
     input?: readonly PiAiModality[]
+    /** Provider-wide default context window in tokens (positive integer). */
+    defaultContextWindow?: number
+    /** Provider-wide default maximum output tokens (positive integer). */
+    defaultMaxTokens?: number
+    /** Provider-wide thinking budgets, keyed by reasoning level. */
+    thinkingBudgets?: PiAiThinkingBudgets
     reasoning?: ModelCapabilityAuthoring['reasoning']
     /** Optional route-level compat switches carried on the defaults block. */
     compat?: CompatCapabilityAuthoring
@@ -125,11 +170,17 @@ export interface CapabilitiesAuthoringConfig {
 /** The native llm-pi-ai `reasoningEfforts` dict shape. */
 export type PiAiReasoningEfforts = Partial<Record<PiAiReasoningLevel, string | null>>
 
+/** Per-level thinking token budgets, keyed by reasoning level. */
+export type PiAiThinkingBudgets = Partial<Record<PiAiReasoningLevel, number>>
+
 /** One compiled provider patch, ready to be merged into the llm-pi-ai namespace. */
 export interface CompiledProviderCapabilities {
   provider: string
   defaultInput?: PiAiModality[]
+  defaultContextWindow?: number
+  defaultMaxTokens?: number
   reasoning?: PiAiReasoningLevel
+  thinkingBudgets?: PiAiThinkingBudgets
   compat?: CompatCapabilityAuthoring
   /**
    * For catalog routes: keyed model overrides.
@@ -137,6 +188,8 @@ export interface CompiledProviderCapabilities {
    */
   modelOverrides?: Record<string, {
     input?: PiAiModality[]
+    contextWindow?: number
+    maxTokens?: number
     reasoningEfforts?: PiAiReasoningEfforts | false
     compat?: CompatCapabilityAuthoring
   }>
@@ -147,6 +200,8 @@ export interface CompiledProviderCapabilities {
   models?: {
     id: string
     input?: PiAiModality[]
+    contextWindow?: number
+    maxTokens?: number
     reasoningEfforts?: PiAiReasoningEfforts | false
     compat?: CompatCapabilityAuthoring
   }[]
