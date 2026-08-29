@@ -14,10 +14,11 @@ import { createElement, useEffect, useRef, useState } from 'react'
 import {
   asArray,
   asRecord,
-  collectOpsForModels,
-  collectOpsForProvider,
+  catalogModelIds,
   defaultReasoningWire,
+  declaredModelIds,
   detectDshMode,
+  isAnthropicModel,
   isAnthropicProvider,
   parseModelDraft,
   parseProviderDraft,
@@ -31,12 +32,14 @@ import {
   type ProviderDraft,
 } from './ops.ts'
 import { COMPAT_FIELDS, isCompatFieldApplicable, type CompatFieldDefinition } from './compat-fields.ts'
-import type { CompatDrafts } from './compat-state.ts'
+import { emptyCompatDrafts, type CompatDrafts } from './compat-state.ts'
 import { CompatDisclosure, CompatGroupSection } from './compat-ui.ts'
-import { collectRuntimeCapabilities, protocolsForProvider, schemaEnumValues, schemaObjectKeys, type RuntimeCapabilities } from './runtime-capabilities.ts'
+import { collectEnumOptions, collectRuntimeCapabilities, protocolsForModel, protocolsForProvider, schemaObjectKeys, subagentRuntimeFactsFromValue, type RuntimeCapabilities } from './runtime-capabilities.ts'
 import { SubagentSettingsCard } from './subagent-ui.ts'
 import { SUBAGENT_MODEL_SELECTION_NAMESPACE, SUBAGENT_NAMESPACE } from '../subagent/constants.ts'
-import { Chip, Disclosure, Dropdown, Field, NumberInput, TextInput } from './ui.ts'
+import { Chip, CompactSelect, DisclosureRow, InlineNumberEditor, SettingRow } from './ui.ts'
+import { buildModelRouteOptions, ModelRoutePicker } from './model-picker.ts'
+import { collectOpsForAllProviders } from './save-helpers.ts'
 
 const NS = 'settings.llm-pi-ai-capabilities'
 const PI_AI_NS = 'llm-pi-ai'
@@ -66,13 +69,14 @@ interface CapabilitiesState {
   runtimeCaps: RuntimeCapabilities
   subagentControl: SubagentControlState
   nativeSubagent: NativeSubagentState
-  enumOptions: { maxTokensField: string[]; thinkingFormat: string[] }
+  enumOptions: { maxTokensField: string[]; thinkingFormat: string[]; cacheControlFormat: string[] }
   error?: string
   saved?: string
 }
 
 const EMPTY_RUNTIME_CAPS: RuntimeCapabilities = {
   compatFields: new Set(),
+  modelCompatFields: new Set(),
   providerFields: new Set(),
   modelFields: new Set(),
   subagent: {
@@ -100,40 +104,19 @@ const EMPTY_STATE: CapabilitiesState = {
   runtimeCaps: EMPTY_RUNTIME_CAPS,
   subagentControl: { value: {}, writable: true },
   nativeSubagent: { writable: true },
-  enumOptions: { maxTokensField: [], thinkingFormat: [] },
+  enumOptions: { maxTokensField: [], thinkingFormat: [], cacheControlFormat: [] },
 }
 
 function modelListOf(
-  provider: string,
+  _provider: string,
   providerConfig: unknown,
-  catalogGroups: unknown[],
+  _catalogGroups: unknown[],
 ): string[] {
-  const ids = new Set<string>()
-  const cfg = asRecord(providerConfig)
+  return declaredModelIds(providerConfig)
+}
 
-  const models = asArray(cfg['models'])
-  if (models.length > 0) {
-    for (const model of models) {
-      const entry = asRecord(model)
-      if (typeof entry['id'] === 'string') ids.add(entry['id'] as string)
-    }
-    return [...ids]
-  }
-
-  const overrides = asRecord(cfg['modelOverrides'])
-  if (Object.keys(overrides).length > 0) {
-    return Object.keys(overrides)
-  }
-
-  for (const group of catalogGroups) {
-    const g = asRecord(group)
-    if (g['id'] !== provider) continue
-    for (const model of asArray(g['models'])) {
-      const m = asRecord(model)
-      if (typeof m['id'] === 'string') ids.add(m['id'] as string)
-    }
-  }
-  return [...ids]
+function catalogModelListOf(provider: string, providerConfig: unknown, catalogGroups: unknown[]): string[] {
+  return catalogModelIds(provider, providerConfig, catalogGroups)
 }
 
 function modelConfigOf(providerConfig: unknown, model: string): unknown {
@@ -143,6 +126,43 @@ function modelConfigOf(providerConfig: unknown, model: string): unknown {
   if (found !== undefined) return found
   const overrides = asRecord(cfg['modelOverrides'])
   return overrides[model]
+}
+
+function mutationRevision(response: unknown): number | undefined {
+  const result = response as { result?: { revision?: unknown; value?: { revision?: unknown } } } | null
+  const candidates = [result?.result?.value?.revision, result?.result?.revision]
+  return candidates.find(value => typeof value === 'number' && Number.isFinite(value)) as number | undefined
+}
+
+function preserveCompatKeys(next: CompatDrafts | undefined, previous: CompatDrafts | undefined, keys: ReadonlySet<string>): CompatDrafts | undefined {
+  if (!next && !previous) return undefined
+  const result: CompatDrafts = { ...(next ?? {}) }
+  for (const key of keys) if (previous?.[key] !== undefined) result[key] = previous[key]
+  return result
+}
+
+function preserveProviderDraft(next: ProviderDraft, previous: ProviderDraft, dirty: ReadonlySet<string>): ProviderDraft {
+  const result = { ...next }
+  const compatKeys = new Set<string>()
+  for (const field of dirty) {
+    if (field.startsWith('compat:')) compatKeys.add(field.slice('compat:'.length))
+    else if (field in result && field in previous) (result as any)[field] = (previous as any)[field]
+  }
+  if (dirty.has('compat')) result.compat = previous.compat
+  else if (compatKeys.size > 0) result.compat = preserveCompatKeys(result.compat, previous.compat, compatKeys)
+  return result
+}
+
+function preserveModelDraft(next: ModelDraft, previous: ModelDraft, dirty: ReadonlySet<string>): ModelDraft {
+  const result = { ...next }
+  const compatKeys = new Set<string>()
+  for (const field of dirty) {
+    if (field.startsWith('compat:')) compatKeys.add(field.slice('compat:'.length))
+    else if (field in result && field in previous) (result as any)[field] = (previous as any)[field]
+  }
+  if (dirty.has('compat')) result.compat = previous.compat
+  else if (compatKeys.size > 0) result.compat = preserveCompatKeys(result.compat, previous.compat, compatKeys)
+  return result
 }
 
 function levelLabel(level: string): string {
@@ -165,11 +185,12 @@ function compatApplicableMap(
   fields: readonly CompatFieldDefinition[],
   protocols: string[],
   drafts: CompatDrafts,
+  runtimeFields?: ReadonlySet<string>,
 ): { applicable: Record<string, boolean>; existing: Record<string, boolean> } {
   const applicable: Record<string, boolean> = {}
   const existing: Record<string, boolean> = {}
   for (const field of fields) {
-    applicable[field.key] = isCompatFieldApplicable(field, protocols)
+    applicable[field.key] = isCompatFieldApplicable(field, protocols) && (runtimeFields === undefined || runtimeFields.has(field.key))
     const draft = drafts[field.key]
     existing[field.key] = draft !== undefined && (
       (draft.kind === 'boolean' && draft.mode !== 'inherit') ||
@@ -192,55 +213,76 @@ function injectStyles(): void {
   const id = '@deepseek-ai/dsh-llm-pi-ai-capabilities/styles'
   if (typeof document === 'undefined' || document.querySelector(`style[data-plugin-css="${id}"]`)) return
   const css = `
-.dsh-mc-root{max-width:760px;color:var(--dsw-alias-label-primary);flex-direction:column;gap:12px;display:flex}
+.dsh-mc-root{width:100%;min-width:0;color:var(--dsw-alias-label-primary);flex-direction:column;gap:18px;display:flex;box-sizing:border-box}
 .dsh-mc-title{color:var(--dsw-alias-label-primary);margin:0;font-size:16px;font-weight:500;line-height:24px}
-.dsh-mc-intro{color:var(--dsw-alias-label-tertiary);margin:0;font-size:14px;line-height:22px}
-.dsh-mc-card{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;flex-direction:column;gap:12px;padding:12px 14px;display:flex}
-.dsh-mc-card-header{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.dsh-mc-intro{color:var(--dsw-alias-label-tertiary);margin:-10px 0 0;font-size:13px;line-height:20px}
+.dsh-mc-section{min-width:0;display:flex;flex-direction:column;gap:2px}
+.dsh-mc-section-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:0 0 5px;border-bottom:1px solid var(--dsw-alias-border-l2)}
 .dsh-mc-section-title{color:var(--dsw-alias-label-primary);margin:0;font-size:14px;font-weight:500;line-height:22px}
-.dsh-mc-field{flex-direction:column;gap:6px;display:flex}
-.dsh-mc-field-label{color:var(--dsw-alias-label-secondary);font-size:13px;font-weight:500;line-height:18px}
-.dsh-mc-muted{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
-.dsh-mc-error{color:var(--dsw-alias-danger-default);font-size:13px;line-height:18px;margin:0}
+.dsh-mc-section-caption{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
+.dsh-mc-setting-rows{display:flex;flex-direction:column;min-width:0}
+.dsh-mc-setting-row{min-height:40px;padding:4px 0;box-sizing:border-box;display:flex;align-items:center;justify-content:space-between;gap:16px}
+.dsh-mc-setting-label-block{min-width:0;display:flex;flex:1;flex-direction:column;gap:1px}
+.dsh-mc-setting-label{color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px}
+.dsh-mc-setting-description,.dsh-mc-setting-warning{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:17px}
+.dsh-mc-setting-warning{color:var(--dsw-alias-state-warn-label)}
+.dsh-mc-setting-control{flex:none;display:flex;align-items:center;justify-content:flex-end;min-width:0}
+.dsh-mc-muted{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;margin:4px 0}
+.dsh-mc-error{color:var(--dsw-alias-danger-default);font-size:13px;line-height:18px;margin:0}.dsh-mc-feedback{display:flex;align-items:center;gap:8px}
 .dsh-mc-saved{color:var(--dsw-alias-success-default);font-size:13px;line-height:18px;margin:0}
 .dsh-mc-empty{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:18px}
-.dsh-mc-chips{flex-wrap:wrap;gap:6px;display:flex}
-.dsh-mc-chip{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-background);color:var(--dsw-alias-label-secondary);border-radius:999px;padding:4px 12px;font-size:13px;cursor:pointer}
+.dsh-mc-chips{flex-wrap:wrap;gap:6px;display:flex;justify-content:flex-end}
+.dsh-mc-chip{border:1px solid var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-secondary);border-radius:999px;padding:3px 10px;font-size:13px;cursor:pointer}
+.dsh-mc-chip:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .dsh-mc-chip-active{border-color:var(--dsw-alias-primary-default);color:var(--dsw-alias-primary-default);font-weight:500}
 .dsh-mc-input,.dsh-mc-textarea{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-background);color:var(--dsw-alias-label-primary);border-radius:8px;padding:7px 10px;font-size:13px;line-height:18px;box-sizing:border-box}
-.dsh-mc-textarea{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;resize:vertical;min-height:64px}
-.dsh-mc-input:focus,.dsh-mc-textarea:focus{outline:none;border-color:var(--dsw-alias-primary-default)}
-.dsh-mc-button{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-background);color:var(--dsw-alias-label-primary);border-radius:8px;padding:7px 14px;font-size:13px;cursor:pointer}
-.dsh-mc-button:hover{border-color:var(--dsw-alias-primary-default);color:var(--dsw-alias-primary-default)}
+.dsh-mc-textarea{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;resize:vertical;min-height:80px;max-height:160px;width:100%;overflow:auto}
+.dsh-mc-input:focus,.dsh-mc-textarea:focus,.dsh-mc-inline-input:focus{outline:none;border-color:var(--dsw-alias-border-l3)}
+.dsh-mc-button{border:1px solid var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-primary);border-radius:8px;padding:6px 12px;font-size:13px;cursor:pointer}
+.dsh-mc-button:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.dsh-mc-button-secondary{align-self:flex-start;margin-top:6px}
 .dsh-mc-link-button{background:none;border:none;color:var(--dsw-alias-primary-default);font-size:13px;cursor:pointer;padding:0}
-.dsh-mc-dropdown{position:relative;min-width:0}
-.dsh-mc-dropdown-button{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-background);color:var(--dsw-alias-label-primary);border-radius:8px;padding:7px 10px;font-size:13px;width:100%;display:flex;align-items:center;gap:8px;cursor:pointer}
-.dsh-mc-dropdown-list{position:absolute;z-index:10;top:calc(100% + 4px);left:0;right:0;max-height:240px;overflow:auto;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-background);border-radius:8px;padding:4px;box-shadow:0 4px 16px rgb(0 0 0 / 12%)}
-.dsh-mc-dropdown-item{display:block;width:100%;text-align:left;border:none;background:none;color:var(--dsw-alias-label-primary);padding:6px 8px;border-radius:6px;font-size:13px;cursor:pointer}
-.dsh-mc-dropdown-item:hover{background:var(--dsw-alias-fill-hover)}
-.dsh-mc-mode{font-size:13px;line-height:20px;margin:0}
-.dsh-mc-mode-native{color:var(--dsw-alias-success-default)}
-.dsh-mc-mode-legacy{color:var(--dsw-alias-warning-default)}
-.dsh-mc-split{display:flex;gap:12px;align-items:flex-start}
-.dsh-mc-model-list{flex:0 0 220px;flex-direction:column;gap:4px;display:flex}
-.dsh-mc-model-item{border:1px solid transparent;background:none;color:var(--dsw-alias-label-secondary);border-radius:8px;padding:8px 10px;text-align:left;cursor:pointer;display:flex;flex-direction:column;gap:2px}
-.dsh-mc-model-item-active{border-color:var(--dsw-alias-primary-default);color:var(--dsw-alias-label-primary);background:var(--dsw-alias-fill-hover)}
-.dsh-mc-model-item-name{font-size:13px;font-weight:500}
-.dsh-mc-model-item-desc{font-size:12px;color:var(--dsw-alias-label-tertiary)}
-.dsh-mc-model-detail{flex:1;min-width:0}
-.dsh-mc-disclosure{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:8px 10px}
-.dsh-mc-disclosure-summary{color:var(--dsw-alias-label-secondary);font-size:13px;font-weight:500;cursor:pointer}
-.dsh-mc-disclosure-body{margin-top:10px;flex-direction:column;gap:10px;display:flex}
-.dsh-mc-disclosure-fields{flex-direction:column;gap:10px;display:flex}
-.dsh-mc-subagent-status{font-size:12px;color:var(--dsw-alias-label-tertiary);border:1px solid var(--dsw-alias-border-l2);border-radius:999px;padding:2px 10px}
-.dsh-mc-subagent-body{flex-direction:column;gap:10px;display:flex}
-.dsh-mc-tag{border:1px solid var(--dsw-alias-border-l2);border-radius:999px;padding:2px 10px;font-size:12px;color:var(--dsw-alias-label-secondary)}
-.dsh-mc-subagent-selected{flex-wrap:wrap;gap:6px;display:flex;align-items:center}
-.dsh-mc-subagent-pool{flex-direction:column;gap:8px;display:flex}
-.dsh-mc-pool-list{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;max-height:260px;overflow:auto;padding:8px}
-.dsh-mc-pool-provider{flex-direction:column;gap:4px;display:flex;padding:4px 0}
-.dsh-mc-pool-provider-name{font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary)}
-.dsh-mc-pool-row{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--dsw-alias-label-primary);cursor:pointer}
+.dsh-mc-icon{display:block;flex:none;color:currentColor}
+.dsh-mc-icon-open{transform:rotate(180deg)}
+.dsh-mc-compact-select{position:relative;min-width:0}
+.dsh-mc-compact-trigger,.dsh-mc-picker-trigger{min-width:0;max-width:280px;height:28px;color:var(--dsw-alias-label-secondary);cursor:pointer;background:transparent;border:none;border-radius:24px;outline:none;align-items:center;gap:4px;padding:0 4px 0 8px;font-size:13px;font-weight:500;line-height:20px;display:flex}
+.dsh-mc-compact-trigger:hover,.dsh-mc-picker-trigger:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
+.dsh-mc-compact-trigger:focus-visible,.dsh-mc-picker-trigger:focus-visible{box-shadow:0 0 0 2px var(--dsw-alias-border-l3)}
+.dsh-mc-compact-trigger-label,.dsh-mc-picker-trigger-label{white-space:nowrap;text-overflow:ellipsis;overflow:hidden;min-width:0}
+.dsh-mc-compact-menu,.dsh-mc-picker-menu{z-index:20;border:1px solid var(--dsw-alias-border-inverted);background:var(--dsw-specific-menu);min-width:min(240px,calc(100vw - 32px));max-width:min(420px,calc(100vw - 32px));max-height:min(360px,calc(100vh - 96px));box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-primary);border-radius:12px;padding:4px;display:flex;flex-direction:column;position:absolute;top:calc(100% + 8px);right:0;overflow:hidden;box-sizing:border-box}
+.dsh-mc-compact-option{width:100%;min-height:38px;padding:6px 8px;border:0;border-radius:10px;background:transparent;color:var(--dsw-alias-label-primary);font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;text-align:left}
+.dsh-mc-compact-option:hover,.dsh-mc-picker-option:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.dsh-mc-compact-check,.dsh-mc-picker-check{flex:0 0 16px;width:16px;height:16px;color:var(--dsw-alias-label-secondary);display:flex;align-items:center;justify-content:center}
+.dsh-mc-inline-value{max-width:220px;min-width:44px;border:0;background:transparent;color:var(--dsw-alias-label-secondary);border-radius:24px;padding:4px 8px;font-size:13px;line-height:20px;cursor:pointer;text-align:right}
+.dsh-mc-inline-value:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.dsh-mc-inline-input{width:120px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-background);color:var(--dsw-alias-label-primary);border-radius:8px;padding:4px 8px;font-size:13px;line-height:20px;box-sizing:border-box}
+.dsh-mc-disclosure-row{min-width:0;border-bottom:1px solid var(--dsw-alias-border-l2)}
+.dsh-mc-disclosure-trigger{width:100%;min-height:40px;padding:4px 0;border:0;background:transparent;color:var(--dsw-alias-label-primary);cursor:pointer;display:flex;align-items:center;gap:8px;text-align:left;font-size:13px}
+.dsh-mc-disclosure-trigger:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}
+.dsh-mc-disclosure-label{min-width:0;flex:1}
+.dsh-mc-disclosure-value{color:var(--dsw-alias-label-secondary);font-size:13px}
+.dsh-mc-disclosure-chevron{color:var(--dsw-alias-label-caption);display:flex}
+.dsh-mc-disclosure-content{padding:2px 0 8px;display:flex;flex-direction:column;gap:2px}
+.dsh-mc-disclosure-fields,.dsh-mc-compat-group{display:flex;flex-direction:column;min-width:0}
+.dsh-mc-json-editor{width:100%;display:flex;flex-direction:column;gap:4px}
+.dsh-mc-compat-control{display:flex;align-items:center;gap:6px;min-width:0}
+.dsh-mc-picker-root{position:relative;min-width:0}
+.dsh-mc-picker-menu{top:calc(100% + 8px)}
+.dsh-mc-picker-menu-up{top:auto;bottom:calc(100% + 8px)}
+.dsh-mc-picker-search{width:100%;height:30px;margin-bottom:4px;box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-background);color:var(--dsw-alias-label-primary);border-radius:8px;padding:4px 8px;font-size:13px;line-height:20px}
+.dsh-mc-picker-listbox{min-width:0;min-height:0;display:flex;flex:1;overflow:hidden}.dsh-mc-picker-groups{min-width:0;min-height:0;flex:1;overflow:auto}
+.dsh-mc-picker-group{padding:0 0 4px}
+.dsh-mc-picker-group-title{position:sticky;top:0;z-index:1;padding:6px 8px 4px;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;background:var(--dsw-specific-menu)}
+.dsh-mc-picker-option{box-sizing:border-box;width:100%;min-height:38px;padding:6px 8px;border:0;border-radius:10px;background:transparent;color:var(--dsw-alias-label-primary);font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;text-align:left}
+.dsh-mc-picker-option-copy{min-width:0;flex:1;display:flex;flex-direction:column;gap:1px}
+.dsh-mc-picker-model{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dsh-mc-picker-detail{color:var(--dsw-alias-label-tertiary);font-size:12px}
+.dsh-mc-picker-empty{color:var(--dsw-alias-label-tertiary);padding:10px 8px;font-size:13px}
+ .dsh-mc-mode{margin:0;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;font-weight:400}
+ .dsh-mc-mode-native{color:var(--dsw-alias-success-default)}
+ .dsh-mc-mode-legacy{color:var(--dsw-alias-state-warn-label)}
+ .dsh-mc-action-row{display:flex;align-items:center;gap:8px;margin-top:6px}
+@media (max-width:520px){.dsh-mc-setting-row{align-items:flex-start;gap:8px}.dsh-mc-setting-label-block{padding-top:4px}.dsh-mc-compact-trigger,.dsh-mc-picker-trigger{max-width:200px}.dsh-mc-chips{justify-content:flex-start}}
 `
   const tag = document.createElement('style')
   tag.dataset.plugin = '@deepseek-ai/dsh-llm-pi-ai-capabilities'
@@ -275,15 +317,26 @@ function CapabilitiesSection(props: any): any {
   const t = props.t
   const [state, setState] = useState<CapabilitiesState>(EMPTY_STATE)
   const [selectedModel, setSelectedModel] = useState('')
-  const [search, setSearch] = useState('')
+  const dirtyProvidersRef = useRef(new Set<string>())
+  const dirtyProviderFieldsRef = useRef(new Map<string, Set<string>>())
+  const dirtyModelFieldsRef = useRef(new Map<string, Map<string, Set<string>>>())
+  const dirtyVersionRef = useRef(0)
+  const saveInFlightRef = useRef(false)
+  const loadGenerationRef = useRef(0)
   const stateRef = useRef(state)
   stateRef.current = state
   const selectedModelRef = useRef(selectedModel)
   selectedModelRef.current = selectedModel
   const activeModelRef = useRef('')
 
-  const load = async (): Promise<void> => {
-    setState(prev => ({ ...prev, status: 'loading', error: undefined, saved: undefined }))
+  const load = async (preserveDirty = false): Promise<void> => {
+    const dirtyProviders = new Set(dirtyProvidersRef.current)
+    if (dirtyProviders.size > 0 && !preserveDirty) return
+    const startDirtyVersion = dirtyVersionRef.current
+    const generation = ++loadGenerationRef.current
+    if (stateRef.current.status !== 'ready') {
+      setState(prev => ({ ...prev, status: 'loading', error: undefined, saved: undefined }))
+    }
     try {
       const [settingsResponse, hostVersion] = await Promise.all([
         api.settings.describe({}),
@@ -297,6 +350,7 @@ function CapabilitiesSection(props: any): any {
       const namespaces = asArray(result.value?.namespaces)
       const ns = namespaces.find((item: any) => asRecord(item)['ns'] === PI_AI_NS)
       if (ns === undefined) {
+        if (generation !== loadGenerationRef.current) return
         setState(prev => ({ ...prev, status: 'error', error: t('namespaceMissing') }))
         return
       }
@@ -340,24 +394,34 @@ function CapabilitiesSection(props: any): any {
       const nativeRecord = nativeView === undefined ? undefined : asRecord(nativeView)
 
       const runtimeCaps = collectRuntimeCapabilities(schema, hostVersion, {
-        runtime: {
-          effectiveVersion: typeof subagentValue['effectiveVersion'] === 'string' ? subagentValue['effectiveVersion'] as string : undefined,
-          toolSubagentSchemaFields: Array.isArray(subagentValue['toolSubagentSchemaFields'])
-            ? (subagentValue['toolSubagentSchemaFields'] as string[])
-            : undefined,
-          agentOptionsSchemaFields: Array.isArray(subagentValue['agentOptionsSchemaFields'])
-            ? (subagentValue['agentOptionsSchemaFields'] as string[])
-            : undefined,
-          modelSelectionSettings: typeof subagentValue['modelSelectionSettings'] === 'boolean'
-            ? subagentValue['modelSelectionSettings'] as boolean
-            : undefined,
-        },
+        ...subagentRuntimeFactsFromValue(subagentValue),
         modelSelectionNamespacePresent: nativeRecord !== undefined,
         modelSelectionNamespaceFields: nativeRecord ? schemaObjectKeys(nativeRecord['schema'], []) : undefined,
       })
 
+      if (generation !== loadGenerationRef.current) return
+      const shouldPreserveDrafts = preserveDirty || dirtyVersionRef.current !== startDirtyVersion
+      if (shouldPreserveDrafts) {
+        const previousState = stateRef.current
+        for (const provider of dirtyProvidersRef.current) {
+          const providerDirty = dirtyProviderFieldsRef.current.get(provider)
+          if (providerDirty && previousState.providerDrafts[provider]) {
+            providerDrafts[provider] = preserveProviderDraft(providerDrafts[provider], previousState.providerDrafts[provider], providerDirty)
+          }
+          const modelDirty = dirtyModelFieldsRef.current.get(provider)
+          if (modelDirty && previousState.modelDrafts[provider]) {
+            for (const [model, fields] of modelDirty) {
+              if (previousState.modelDrafts[provider][model] && modelDrafts[provider]?.[model]) {
+                modelDrafts[provider][model] = preserveModelDraft(modelDrafts[provider][model], previousState.modelDrafts[provider][model], fields)
+              }
+            }
+          }
+        }
+      }
       setState({
         status: 'ready',
+        error: undefined,
+        saved: undefined,
         writable: result.value?.writable !== false,
         revision: typeof view['revision'] === 'number' ? view['revision'] as number : 0,
         providers,
@@ -382,13 +446,11 @@ function CapabilitiesSection(props: any): any {
           revision: nativeRecord ? nativeRecord['revision'] as number | undefined : undefined,
           writable: nativeRecord ? nativeRecord['writable'] !== false : false,
         },
-        enumOptions: {
-          maxTokensField: schemaEnumValues(schema, ['providers', 'inner', 'compat', 'maxTokensField']),
-          thinkingFormat: schemaEnumValues(schema, ['providers', 'inner', 'compat', 'thinkingFormat']),
-        },
+        enumOptions: collectEnumOptions(schema),
       })
       setSelectedModel(nextModel)
     } catch (error: any) {
+      if (generation !== loadGenerationRef.current) return
       setState(prev => ({ ...prev, status: 'error', error: String(error?.message ?? error) }))
     }
   }
@@ -405,12 +467,39 @@ function CapabilitiesSection(props: any): any {
     const firstModel = Object.keys(state.modelDrafts[provider] ?? {})[0] ?? ''
     setState(prev => ({ ...prev, selectedProvider: provider, saved: undefined }))
     setSelectedModel(firstModel)
-    setSearch('')
+  }
+
+  const changeModelRoute = (route: { provider: string; model: string } | null): void => {
+    if (route === null) return
+    setState(prev => ({ ...prev, selectedProvider: route.provider, saved: undefined }))
+    setSelectedModel(route.model)
+  }
+
+  const markProviderDirty = (provider: string, fields: string[] = []): void => {
+    if (!provider) return
+    dirtyProvidersRef.current.add(provider)
+    const dirty = dirtyProviderFieldsRef.current.get(provider) ?? new Set<string>()
+    for (const field of fields) dirty.add(field)
+    dirtyProviderFieldsRef.current.set(provider, dirty)
+    dirtyVersionRef.current += 1
+  }
+
+  const markModelDirty = (provider: string, model: string, fields: string[] = []): void => {
+    if (!provider || !model) return
+    markProviderDirty(provider)
+    const providerModels = dirtyModelFieldsRef.current.get(provider) ?? new Map<string, Set<string>>()
+    const dirty = providerModels.get(model) ?? new Set<string>()
+    for (const field of fields) dirty.add(field)
+    providerModels.set(model, dirty)
+    dirtyModelFieldsRef.current.set(provider, providerModels)
   }
 
   const updateProviderDraft = (patch: Partial<ProviderDraft>): void => {
     const provider = state.selectedProvider
     if (!provider) return
+    const dirtyFields = Object.keys(patch)
+    if (dirtyFields.includes('adaptiveThinking')) dirtyFields.push('compat:forceAdaptiveThinking')
+    markProviderDirty(provider, dirtyFields)
     setState(prev => ({
       ...prev,
       providerDrafts: { ...prev.providerDrafts, [provider]: { ...prev.providerDrafts[provider], ...patch } },
@@ -421,6 +510,7 @@ function CapabilitiesSection(props: any): any {
     const provider = state.selectedProvider
     const model = activeModelRef.current
     if (!provider || !model) return
+    markModelDirty(provider, model, Object.keys(patch))
     setState(prev => ({
       ...prev,
       modelDrafts: {
@@ -434,12 +524,13 @@ function CapabilitiesSection(props: any): any {
   }
 
   const resetModel = (): void => {
-    updateModelDraft({ input: [], reasoningMode: 'inherit', efforts: [], wire: {}, contextWindow: '', maxTokens: '', compat: {} })
+    updateModelDraft({ input: [], reasoningMode: 'inherit', efforts: [], wire: {}, contextWindow: '', maxTokens: '', compat: emptyCompatDrafts() })
   }
 
   const resetProvider = (): void => {
     const provider = state.selectedProvider
     if (!provider) return
+    markProviderDirty(provider, ['defaultInput', 'defaultReasoning', 'adaptiveThinking', 'defaultContextWindow', 'defaultMaxTokens', 'thinkingBudgets', 'compat'])
     setState(prev => ({
       ...prev,
       providerDrafts: {
@@ -452,7 +543,7 @@ function CapabilitiesSection(props: any): any {
           defaultContextWindow: '',
           defaultMaxTokens: '',
           thinkingBudgets: {},
-          compat: {},
+          compat: emptyCompatDrafts(),
         },
       },
     }))
@@ -483,7 +574,7 @@ function CapabilitiesSection(props: any): any {
     const normalized = trimmed === ''
       ? level === 'off'
         ? null
-        : defaultReasoningWire(piLevel, isAnthropicProvider(provider, state.providers[provider], state.catalogGroups))
+        : defaultReasoningWire(piLevel, isAnthropicModel(provider, model, state.providers[provider], state.catalogGroups))
       : level === 'off' && trimmed === 'null'
         ? null
         : trimmed
@@ -496,7 +587,8 @@ function CapabilitiesSection(props: any): any {
     const provider = state.selectedProvider
     const draft = state.providerDrafts[provider]
     if (!provider || !draft) return
-    updateProviderDraft({ compat: { ...draft.compat, [key]: value } })
+    markProviderDirty(provider, [`compat:${key}`])
+    setState(prev => ({ ...prev, providerDrafts: { ...prev.providerDrafts, [provider]: { ...prev.providerDrafts[provider], compat: { ...prev.providerDrafts[provider].compat, [key]: value } } } }))
   }
 
   const updateModelCompat = (key: string, value: any): void => {
@@ -504,28 +596,50 @@ function CapabilitiesSection(props: any): any {
     const model = activeModelRef.current
     const draft = provider ? state.modelDrafts[provider]?.[model] : undefined
     if (!provider || !model || !draft) return
-    updateModelDraft({ compat: { ...draft.compat, [key]: value } })
+    markModelDirty(provider, model, [`compat:${key}`])
+    setState(prev => ({ ...prev, modelDrafts: { ...prev.modelDrafts, [provider]: { ...prev.modelDrafts[provider], [model]: { ...prev.modelDrafts[provider][model], compat: { ...prev.modelDrafts[provider][model].compat, [key]: value } } } } }))
   }
 
   const save = (): void => {
-    if (state.status !== 'ready' || state.selectedProvider === '') return
-    const provider = state.selectedProvider
-    const anthropic = isAnthropicProvider(provider, state.providers[provider], state.catalogGroups)
-    const ops = [
-      ...collectOpsForProvider(provider, state.providers[provider], state.providerDrafts[provider]),
-      ...collectOpsForModels(provider, state.providers[provider], state.modelDrafts[provider] ?? {}, anthropic),
-    ]
+    if (state.status !== 'ready' || state.selectedProvider === '' || dirtyProvidersRef.current.size === 0 || saveInFlightRef.current) return
+    saveInFlightRef.current = true
+    let ops: ReturnType<typeof collectOpsForAllProviders>
+    const dirtyProviders = new Set(dirtyProvidersRef.current)
+    const saveVersion = dirtyVersionRef.current
+    try {
+      ops = collectOpsForAllProviders(
+        Object.keys(state.providers), state.providers, state.providerDrafts, state.modelDrafts,
+        dirtyProviders, state.catalogGroups, state.runtimeCaps.modelCompatFields,
+        dirtyProviderFieldsRef.current, dirtyModelFieldsRef.current, state.runtimeCaps.compatFields,
+      )
+    } catch (error: any) {
+      saveInFlightRef.current = false
+      setState(prev => ({ ...prev, saved: undefined, error: String(error?.message ?? error) }))
+      return
+    }
     setState(prev => ({ ...prev, saved: undefined, error: undefined }))
-    void api.settings.mutate({ ns: PI_AI_NS, ops, expectedRevision: state.revision }).then((response: any) => {
+    void Promise.resolve().then(() => api.settings.mutate({ ns: PI_AI_NS, ops, expectedRevision: state.revision })).then((response: any) => {
       if (response?.result?.ok !== true) {
         throw new Error(response?.result?.error?.message ?? 'settings.mutate failed')
       }
+      const nextRevision = mutationRevision(response)
+       if (dirtyVersionRef.current !== saveVersion) {
+        setState(prev => ({ ...prev, revision: nextRevision ?? prev.revision, saved: t('savedWithPending') }))
+        return
+      }
+      for (const provider of dirtyProviders) {
+         dirtyProvidersRef.current.delete(provider)
+         dirtyProviderFieldsRef.current.delete(provider)
+         dirtyModelFieldsRef.current.delete(provider)
+       }
       return load().then(() => {
         setState(prev => ({ ...prev, saved: t('saved') }))
       })
     }).catch((error: any) => {
-      setState(prev => ({ ...prev, error: String(error?.message ?? error) }))
-    })
+      const message = String(error?.message ?? error)
+      setState(prev => ({ ...prev, error: message }))
+      // Keep the conflict visible so the user can choose when to reload.
+    }).finally(() => { saveInFlightRef.current = false })
   }
 
   const h = createElement
@@ -557,23 +671,27 @@ function CapabilitiesSection(props: any): any {
   const protocols = protocolsForProvider(provider, state.providers[provider], state.catalogGroups)
   const modelDrafts = state.modelDrafts[provider] ?? {}
   const modelIds = Object.keys(modelDrafts)
-  const filteredModelIds = search.trim() === ''
-    ? modelIds
-    : modelIds.filter(id => id.toLowerCase().includes(search.trim().toLowerCase()))
-  const activeModel = selectedModel && filteredModelIds.includes(selectedModel) ? selectedModel : (filteredModelIds[0] ?? '')
+  const activeModel = selectedModel && modelIds.includes(selectedModel) ? selectedModel : (modelIds[0] ?? '')
   activeModelRef.current = activeModel
   const activeDraft = activeModel ? modelDrafts[activeModel] : undefined
   const activeCompatDrafts = activeDraft?.compat ?? {}
+  const modelProtocols = activeModel
+    ? protocolsForModel(provider, activeModel, state.providers[provider], state.catalogGroups)
+    : protocols
+  const modelAnthropic = activeModel
+    ? isAnthropicModel(provider, activeModel, state.providers[provider], state.catalogGroups)
+    : anthropic
 
   const providerCompat = providerDraft?.compat ?? {}
   const providerCommon = compatFieldsOf('common', false)
   const providerAdvanced = compatFieldsOf('advanced', true)
   const providerAnthropic = compatFieldsOf('anthropic', false)
-  const providerCommonMap = compatApplicableMap(providerCommon, protocols, providerCompat)
-  const providerAdvancedMap = compatApplicableMap(providerAdvanced, protocols, providerCompat)
-  const providerAnthropicMap = compatApplicableMap(providerAnthropic, protocols, providerCompat)
+  const providerCompatFields = state.runtimeCaps.compatFields
+  const providerCommonMap = compatApplicableMap(providerCommon, protocols, providerCompat, providerCompatFields)
+  const providerAdvancedMap = compatApplicableMap(providerAdvanced, protocols, providerCompat, providerCompatFields)
+  const providerAnthropicMap = compatApplicableMap(providerAnthropic, protocols, providerCompat, providerCompatFields)
   const modelCompatFields = COMPAT_FIELDS
-  const modelCompatMap = compatApplicableMap(modelCompatFields, protocols, activeCompatDrafts)
+  const modelCompatMap = compatApplicableMap(modelCompatFields, modelProtocols, activeCompatDrafts, state.runtimeCaps.modelCompatFields)
 
   const resolvedInput = (() => {
     if (activeDraft && activeDraft.input.length > 0) return activeDraft.input
@@ -591,10 +709,12 @@ function CapabilitiesSection(props: any): any {
   })()
 
   const modelsByProvider: Record<string, string[]> = {}
+  const configuredModelsByProvider: Record<string, string[]> = {}
   const reasoningEffortsByModel: Record<string, string[]> = {}
   for (const name of providerNames) {
-    const ids = modelListOf(name, state.providers[name], state.catalogGroups)
+    const ids = catalogModelListOf(name, state.providers[name], state.catalogGroups)
     modelsByProvider[name] = ids
+    configuredModelsByProvider[name] = modelListOf(name, state.providers[name], [])
     for (const model of ids) {
       const draft = state.modelDrafts[name]?.[model]
       reasoningEffortsByModel[`${name}\u0000${model}`] = draft?.efforts ?? []
@@ -608,91 +728,74 @@ function CapabilitiesSection(props: any): any {
   return h('div', { className: 'dsh-mc-root' },
     h('h2', { className: 'dsh-mc-title' }, t('nav')),
     h('p', { className: 'dsh-mc-intro' }, t('pageDescription')),
-    state.error ? h('p', { className: 'dsh-mc-error' }, state.error) : null,
+    state.error ? h('div', { className: 'dsh-mc-feedback' }, h('p', { className: 'dsh-mc-error' }, state.error), h('button', { type: 'button', className: 'dsh-mc-link-button', onClick: () => void load(true) }, t('reload'))) : null,
     state.saved ? h('p', { className: 'dsh-mc-saved' }, state.saved) : null,
 
-    h('div', { className: 'dsh-mc-field' },
-      h('span', { className: 'dsh-mc-field-label' }, t('provider')),
-      h(Dropdown, {
-        value: provider,
-        options: providerNames.map(name => ({ value: name, label: name })),
-        onChange: changeProvider,
-        ariaLabel: t('provider'),
+    h('section', { className: 'dsh-mc-section' },
+      h('div', { className: 'dsh-mc-section-heading' }, h('h3', { className: 'dsh-mc-section-title' }, t('modelCapabilities'))),
+      h(SettingRow, {
+        label: t('provider'),
+        control: h(CompactSelect, {
+          value: provider,
+          options: providerNames.map(name => ({ value: name, label: name })),
+          onChange: changeProvider,
+          ariaLabel: t('provider'),
+        }),
       }),
     ),
 
     // Provider default capabilities.
-    providerDraft ? h('div', { className: 'dsh-mc-card' },
-      h('div', { className: 'dsh-mc-card-header' },
+    providerDraft ? h('section', { className: 'dsh-mc-section' },
+      h('div', { className: 'dsh-mc-section-heading' },
         h('h3', { className: 'dsh-mc-section-title' }, t('providerDefaults')),
         h(ModeStatus, { mode: state.dshMode, t }),
       ),
-      h('div', { className: 'dsh-mc-field' },
-        h('span', { className: 'dsh-mc-field-label' }, t('inputCapability')),
-        h('div', { className: 'dsh-mc-chips' },
-          MODALITIES.map(modality => h(Chip, {
-            key: modality,
-            label: modalityLabel(modality),
-            active: providerDraft.defaultInput.includes(modality),
-            onClick: () => updateProviderDraft({ defaultInput: toggleValue(providerDraft.defaultInput, modality) }),
-          })),
-        ),
-      ),
-      state.runtimeCaps.providerFields.has('defaultContextWindow') ? h('div', { className: 'dsh-mc-field' },
-        h('span', { className: 'dsh-mc-field-label' }, t('defaultContextWindow')),
-        h(NumberInput, {
-          value: providerDraft.defaultContextWindow ?? '',
-          onChange: (value: string) => updateProviderDraft({ defaultContextWindow: value }),
-          placeholder: t('inherit'),
-          ariaLabel: t('defaultContextWindow'),
-        }),
-      ) : null,
-      state.runtimeCaps.providerFields.has('defaultMaxTokens') ? h('div', { className: 'dsh-mc-field' },
-        h('span', { className: 'dsh-mc-field-label' }, t('defaultMaxTokens')),
-        h(NumberInput, {
-          value: providerDraft.defaultMaxTokens ?? '',
-          onChange: (value: string) => updateProviderDraft({ defaultMaxTokens: value }),
-          placeholder: t('inherit'),
-          ariaLabel: t('defaultMaxTokens'),
-        }),
-      ) : null,
+      h(SettingRow, {
+        label: t('inputCapability'),
+        control: h('div', { className: 'dsh-mc-chips' }, MODALITIES.map(modality => h(Chip, {
+          key: modality,
+          label: modalityLabel(modality),
+          active: providerDraft.defaultInput.includes(modality),
+          onClick: () => updateProviderDraft({ defaultInput: toggleValue(providerDraft.defaultInput, modality) }),
+        }))),
+      }),
+      state.runtimeCaps.providerFields.has('defaultContextWindow') ? h(SettingRow, {
+        label: t('defaultContextWindow'),
+        control: h(InlineNumberEditor, { value: providerDraft.defaultContextWindow ?? '', onChange: value => updateProviderDraft({ defaultContextWindow: value }), placeholder: t('inherit'), ariaLabel: t('defaultContextWindow') }),
+      }) : null,
+      state.runtimeCaps.providerFields.has('defaultMaxTokens') ? h(SettingRow, {
+        label: t('defaultMaxTokens'),
+        control: h(InlineNumberEditor, { value: providerDraft.defaultMaxTokens ?? '', onChange: value => updateProviderDraft({ defaultMaxTokens: value }), placeholder: t('inherit'), ariaLabel: t('defaultMaxTokens') }),
+      }) : null,
     ) : null,
 
     // Provider reasoning.
-    providerDraft ? h('div', { className: 'dsh-mc-card' },
-      h('h3', { className: 'dsh-mc-section-title' }, t('reasoningCapabilities')),
-      h('div', { className: 'dsh-mc-field' },
-        h('span', { className: 'dsh-mc-field-label' }, t('defaultReasoning')),
-        h(Dropdown, {
+    providerDraft ? h('section', { className: 'dsh-mc-section' },
+      h('div', { className: 'dsh-mc-section-heading' }, h('h3', { className: 'dsh-mc-section-title' }, t('reasoningCapabilities'))),
+      h(SettingRow, {
+        label: t('defaultReasoning'),
+        control: h(CompactSelect, {
           value: providerDraft.defaultReasoning,
-          options: [
-            { value: '', label: t('inherit') },
-            ...LEVELS.map(level => ({ value: level, label: levelLabel(level) })),
-          ],
+          options: [{ value: '', label: t('inherit') }, ...LEVELS.map(level => ({ value: level, label: levelLabel(level) }))],
           onChange: (value: string) => updateProviderDraft({ defaultReasoning: value }),
           placeholder: t('inherit'),
           ariaLabel: t('defaultReasoning'),
         }),
-      ),
-      anthropic ? h('div', { className: 'dsh-mc-field' },
-        h('span', { className: 'dsh-mc-field-label' }, t('anthropicReasoningEffort')),
-        h('p', { className: 'dsh-mc-muted', style: { margin: 0 } }, t('anthropicReasoningEffortDescription')),
-        h(Dropdown, {
+      }),
+      anthropic ? h(SettingRow, {
+        label: t('anthropicReasoningEffort'),
+        control: h(CompactSelect, {
           value: providerDraft.adaptiveThinking,
-          options: [
-            { value: 'inherit', label: t('inherit') },
-            { value: 'enabled', label: t('adaptiveEnabled') },
-            { value: 'disabled', label: t('adaptiveDisabled') },
-          ],
-          onChange: (value: AdaptiveThinkingMode) => updateProviderDraft({ adaptiveThinking: value }),
-          placeholder: t('inherit'),
+          options: [{ value: 'inherit', label: t('inherit') }, { value: 'enabled', label: t('adaptiveEnabled') }, { value: 'disabled', label: t('adaptiveDisabled') }],
+          onChange: (value: string) => updateProviderDraft({ adaptiveThinking: value as AdaptiveThinkingMode }),
           ariaLabel: t('anthropicReasoningEffort'),
         }),
-      ) : null,
-      h(Disclosure, { summary: t('thinkingBudgets') },
-        ['minimal', 'low', 'medium', 'high'].map(level => h('div', { key: level, className: 'dsh-mc-field' },
-          h('span', { className: 'dsh-mc-field-label' }, levelLabel(level)),
-          h(NumberInput, {
+      }) : null,
+      h(DisclosureRow, { summary: t('thinkingBudgets'), value: Object.keys(providerDraft.thinkingBudgets ?? {}).length === 0 ? t('inherit') : t('configured') },
+        h('div', { className: 'dsh-mc-setting-rows' }, ['minimal', 'low', 'medium', 'high'].map(level => h(SettingRow, {
+          key: level,
+          label: levelLabel(level),
+          control: h(InlineNumberEditor, {
             value: providerDraft.thinkingBudgets?.[level] ?? '',
             onChange: (value: string) => {
               const budgets = { ...providerDraft.thinkingBudgets }
@@ -703,13 +806,13 @@ function CapabilitiesSection(props: any): any {
             placeholder: t('inherit'),
             ariaLabel: level,
           }),
-        )),
+        }))),
       ),
     ) : null,
 
     // Interface compatibility (provider level).
-    providerDraft ? h('div', { className: 'dsh-mc-card' },
-      h('h3', { className: 'dsh-mc-section-title' }, t('interfaceCompatibility')),
+    providerDraft ? h('section', { className: 'dsh-mc-section' },
+      h('div', { className: 'dsh-mc-section-heading' }, h('h3', { className: 'dsh-mc-section-title' }, t('interfaceCompatibility'))),
       h(CompatGroupSection, {
         fields: providerCommon,
         drafts: providerCompat,
@@ -721,200 +824,124 @@ function CapabilitiesSection(props: any): any {
         onChange: updateProviderCompat,
       }),
       h(CompatDisclosure, {
-        summary: t('advancedCompatibility'),
-        fields: providerAdvanced,
-        drafts: providerCompat,
-        applicable: providerAdvancedMap.applicable,
-        existing: providerAdvancedMap.existing,
-        enumOptions: state.enumOptions,
-        level: 'provider',
-        t,
-        onChange: updateProviderCompat,
+        summary: t('advancedCompatibility'), fields: providerAdvanced, drafts: providerCompat,
+        applicable: providerAdvancedMap.applicable, existing: providerAdvancedMap.existing,
+        enumOptions: state.enumOptions, level: 'provider', t, onChange: updateProviderCompat,
       }),
       h(CompatDisclosure, {
-        summary: t('anthropicCompatibility'),
-        fields: providerAnthropic,
-        drafts: providerCompat,
-        applicable: providerAnthropicMap.applicable,
-        existing: providerAnthropicMap.existing,
-        enumOptions: state.enumOptions,
-        level: 'provider',
-        t,
-        onChange: updateProviderCompat,
+        summary: t('anthropicCompatibility'), fields: providerAnthropic, drafts: providerCompat,
+        applicable: providerAnthropicMap.applicable, existing: providerAnthropicMap.existing,
+        enumOptions: state.enumOptions, level: 'provider', t, onChange: updateProviderCompat,
       }),
     ) : null,
 
     h(SubagentSettingsCard, {
-      t,
-      api,
-      capabilities: state.runtimeCaps.subagent,
-      controlValue: state.subagentControl.value,
-      controlRevision: state.subagentControl.revision,
-      controlWritable: state.subagentControl.writable,
-      nativeNamespace: state.nativeSubagent,
-      providerNames,
-      modelsByProvider,
-      reasoningEffortsByModel,
-      providerSupportsAgentOptions,
-      onApplied: () => void load(),
+      t, api, capabilities: state.runtimeCaps.subagent,
+      controlValue: state.subagentControl.value, controlRevision: state.subagentControl.revision,
+      controlWritable: state.subagentControl.writable, nativeNamespace: state.nativeSubagent,
+      providerNames, modelsByProvider, reasoningEffortsByModel, providerSupportsAgentOptions,
+       onApplied: () => void load(true),
     }),
 
-    h('div', { className: 'dsh-mc-field' },
-      h('span', { className: 'dsh-mc-field-label' }, t('models')),
-      createElement('input', {
-        className: 'dsh-mc-input',
-        value: search,
-        placeholder: t('searchModels'),
-        onChange: (event: any) => setSearch(event.target.value),
-      }),
-    ),
-
-    filteredModelIds.length === 0
+    modelIds.length === 0
       ? h('p', { className: 'dsh-mc-empty' }, t('noModels'))
-      : h('div', { className: 'dsh-mc-split' },
-          h('div', { className: 'dsh-mc-model-list' },
-            filteredModelIds.map(model => {
-              const draft = modelDrafts[model]
-              const summary = draft.reasoningMode === 'custom' || draft.input.length > 0
-                ? t('summaryCustom')
-                : draft.reasoningMode === 'unsupported'
-                  ? t('summaryUnsupported')
-                  : t('summaryInherit')
-              return h('button', {
-                key: model,
-                type: 'button',
-                className: `dsh-mc-model-item${model === activeModel ? ' dsh-mc-model-item-active' : ''}`,
-                onClick: () => setSelectedModel(model),
-              },
-                h('span', { className: 'dsh-mc-model-item-name' }, model),
-                h('span', { className: 'dsh-mc-model-item-desc' }, summary),
-              )
-            }),
+      : activeDraft ? h('section', { className: 'dsh-mc-section' },
+          h('div', { className: 'dsh-mc-section-heading' },
+            h('h3', { className: 'dsh-mc-section-title' }, t('modelSettings')),
+            h('button', { type: 'button', className: 'dsh-mc-link-button', onClick: resetModel }, t('resetModel')),
           ),
-          activeDraft ? h('div', { className: 'dsh-mc-model-detail' },
-            h('div', { className: 'dsh-mc-card' },
-              h('div', { className: 'dsh-mc-card-header' },
-                h('h3', { className: 'dsh-mc-section-title' }, activeModel),
-                h('button', { type: 'button', className: 'dsh-mc-link-button', onClick: resetModel }, t('resetModel')),
-              ),
-              h('div', { className: 'dsh-mc-field' },
-                h('span', { className: 'dsh-mc-field-label' }, t('inputCapability')),
-                h('div', { className: 'dsh-mc-chips' },
-                  MODALITIES.map(modality => h(Chip, {
-                    key: modality,
-                    label: modalityLabel(modality),
-                    active: activeDraft.input.includes(modality),
-                    onClick: () => updateModelDraft({ input: toggleValue(activeDraft.input, modality) }),
-                  })),
-                ),
-              ),
-              h('div', { className: 'dsh-mc-field' },
-                h('span', { className: 'dsh-mc-field-label' }, t('reasoningCapability')),
-                h('div', { className: 'dsh-mc-chips' },
-                  h(Chip, {
-                    label: t('inherit'),
-                    active: activeDraft.reasoningMode === 'inherit',
-                    onClick: () => updateModelDraft({ reasoningMode: 'inherit', efforts: [], wire: {} }),
-                  }),
-                  h(Chip, {
-                    label: t('unsupported'),
-                    active: activeDraft.reasoningMode === 'unsupported',
-                    onClick: () => updateModelDraft({ reasoningMode: 'unsupported', efforts: [], wire: {} }),
-                  }),
-                  h(Chip, {
-                    label: t('custom'),
-                    active: activeDraft.reasoningMode === 'custom',
-                    onClick: () => updateModelDraft({ reasoningMode: 'custom', efforts: activeDraft.efforts.length > 0 ? activeDraft.efforts : ['medium'], wire: activeDraft.wire }),
-                  }),
-                ),
-              ),
-              activeDraft.reasoningMode === 'custom' ? h('div', { className: 'dsh-mc-field' },
-                h('span', { className: 'dsh-mc-field-label' }, t('reasoningLevels')),
-                h('div', { className: 'dsh-mc-chips' },
-                  LEVELS.map(level => h(Chip, {
-                    key: level,
-                    label: levelLabel(level),
-                    active: activeDraft.efforts.includes(level),
-                    onClick: () => toggleReasoningLevel(level),
-                  })),
-                ),
-              ) : null,
-              activeDraft.reasoningMode === 'custom' ? h('div', { className: 'dsh-mc-field' },
-                h('span', { className: 'dsh-mc-field-label' }, t('reasoningWire')),
-                activeDraft.efforts.map(level => h('div', { key: level, className: 'dsh-mc-field' },
-                  h('span', { className: 'dsh-mc-field-label' }, levelLabel(level)),
-                  h(TextInput, {
-                    value: reasoningWireFor(activeDraft, level as PiAiReasoningLevel, anthropic) ?? '',
-                    onChange: (value: string) => updateReasoningWire(level, value),
-                    placeholder: t('inherit'),
-                    ariaLabel: level,
-                  }),
-                )),
-              ) : null,
-              state.runtimeCaps.modelFields.has('contextWindow') ? h('div', { className: 'dsh-mc-field' },
-                h('span', { className: 'dsh-mc-field-label' }, t('modelContextWindow')),
-                h(NumberInput, {
-                  value: activeDraft.contextWindow ?? '',
-                  onChange: (value: string) => updateModelDraft({ contextWindow: value }),
-                  placeholder: t('inherit'),
-                  ariaLabel: t('modelContextWindow'),
+          h(SettingRow, {
+            label: t('currentModel'),
+             description: resolvedSource,
+            control: h(ModelRoutePicker, {
+              options: buildModelRouteOptions(providerNames, configuredModelsByProvider, { current: { provider, model: activeModel } }),
+              value: { provider, model: activeModel },
+              onChange: changeModelRoute,
+              ariaLabel: t('currentModel'),
+              searchPlaceholder: t('searchModels'),
+              searchAriaLabel: t('searchModels'),
+              emptyLabel: t('noModels'),
+            }),
+          }),
+          h(SettingRow, {
+            label: t('inputCapability'),
+            control: h('div', { className: 'dsh-mc-chips' }, MODALITIES.map(modality => h(Chip, {
+              key: modality,
+              label: modalityLabel(modality),
+              active: activeDraft.input.includes(modality),
+              onClick: () => updateModelDraft({ input: toggleValue(activeDraft.input, modality) }),
+            }))),
+          }),
+          h(SettingRow, {
+             label: t('resolvedCapability'),
+             description: resolvedSource,
+             control: h('span', { className: 'dsh-mc-muted' }, `${resolvedInput.join(', ')}${resolvedReasoning.length > 0 ? ` · ${resolvedReasoning.join(', ')}` : ''}`),
+           }),
+           state.runtimeCaps.modelFields.has('contextWindow') ? h(SettingRow, {
+            label: t('modelContextWindow'),
+            control: h(InlineNumberEditor, { value: activeDraft.contextWindow ?? '', onChange: value => updateModelDraft({ contextWindow: value }), placeholder: t('inherit'), ariaLabel: t('modelContextWindow') }),
+          }) : null,
+          state.runtimeCaps.modelFields.has('maxTokens') ? h(SettingRow, {
+            label: t('modelMaxTokens'),
+            control: h(InlineNumberEditor, { value: activeDraft.maxTokens ?? '', onChange: value => updateModelDraft({ maxTokens: value }), placeholder: t('inherit'), ariaLabel: t('modelMaxTokens') }),
+          }) : null,
+          h(DisclosureRow, {
+            summary: t('reasoningCapability'),
+            value: activeDraft.reasoningMode === 'custom' ? `${activeDraft.efforts.length} ${t('reasoningLevels')}` : activeDraft.reasoningMode === 'unsupported' ? t('unsupported') : t('inherit'),
+          },
+          h('div', { className: 'dsh-mc-setting-rows' },
+            h(SettingRow, {
+              label: t('reasoningCapability'),
+              control: h(CompactSelect, {
+                value: activeDraft.reasoningMode,
+                options: [{ value: 'inherit', label: t('inherit') }, { value: 'unsupported', label: t('unsupported') }, { value: 'custom', label: t('custom') }],
+                onChange: (value: string) => updateModelDraft(value === 'custom'
+                  ? { reasoningMode: 'custom', efforts: activeDraft.efforts.length > 0 ? activeDraft.efforts : ['medium'], wire: activeDraft.wire }
+                  : { reasoningMode: value as 'inherit' | 'unsupported', efforts: [], wire: {} }),
+                ariaLabel: t('reasoningCapability'),
+              }),
+            }),
+            activeDraft.reasoningMode === 'custom' ? h(SettingRow, {
+              label: t('reasoningLevels'),
+              control: h('div', { className: 'dsh-mc-chips' }, LEVELS.map(level => h(Chip, {
+                key: level, label: levelLabel(level), active: activeDraft.efforts.includes(level), onClick: () => toggleReasoningLevel(level),
+              }))),
+            }) : null,
+            activeDraft.reasoningMode === 'custom' ? h(DisclosureRow, { summary: t('reasoningWire'), value: t('configured') },
+              h('div', { className: 'dsh-mc-setting-rows' }, activeDraft.efforts.map(level => h(SettingRow, {
+                key: level,
+                label: levelLabel(level),
+                control: h('input', {
+                  className: 'dsh-mc-inline-input',
+                  value: reasoningWireFor(activeDraft, level as PiAiReasoningLevel, modelAnthropic) ?? '',
+                  onChange: (event: any) => updateReasoningWire(level, event.target.value),
+                  'aria-label': level,
                 }),
-              ) : null,
-              state.runtimeCaps.modelFields.has('maxTokens') ? h('div', { className: 'dsh-mc-field' },
-                h('span', { className: 'dsh-mc-field-label' }, t('modelMaxTokens')),
-                h(NumberInput, {
-                  value: activeDraft.maxTokens ?? '',
-                  onChange: (value: string) => updateModelDraft({ maxTokens: value }),
-                  placeholder: t('inherit'),
-                  ariaLabel: t('modelMaxTokens'),
-                }),
-              ) : null,
-              h('div', { className: 'dsh-mc-field' },
-                h('span', { className: 'dsh-mc-field-label' }, t('resolvedCapability')),
-                h('p', { className: 'dsh-mc-muted', style: { margin: 0 } },
-                  `${t('input')}: ${resolvedInput.join(', ')} · ${t('reasoning')}: ${resolvedReasoning.join(', ') || t('inherit')} · ${t('source')}: ${resolvedSource}`),
-              ),
-              h(Disclosure, { summary: t('modelCompatDisclosure') },
-                h('div', { className: 'dsh-mc-disclosure-fields' },
-                  h(CompatGroupSection, {
-                    fields: modelCompatFields.filter(field => field.group === 'common'),
-                    drafts: activeCompatDrafts,
-                    applicable: modelCompatMap.applicable,
-                    existing: modelCompatMap.existing,
-                    enumOptions: state.enumOptions,
-                    level: 'model',
-                    t,
-                    onChange: updateModelCompat,
-                  }),
-                  h(CompatDisclosure, {
-                    summary: t('advancedCompatibility'),
-                    fields: modelCompatFields.filter(field => field.group === 'advanced'),
-                    drafts: activeCompatDrafts,
-                    applicable: modelCompatMap.applicable,
-                    existing: modelCompatMap.existing,
-                    enumOptions: state.enumOptions,
-                    level: 'model',
-                    t,
-                    onChange: updateModelCompat,
-                  }),
-                  h(CompatDisclosure, {
-                    summary: t('anthropicCompatibility'),
-                    fields: modelCompatFields.filter(field => field.group === 'anthropic'),
-                    drafts: activeCompatDrafts,
-                    applicable: modelCompatMap.applicable,
-                    existing: modelCompatMap.existing,
-                    enumOptions: state.enumOptions,
-                    level: 'model',
-                    t,
-                    onChange: updateModelCompat,
-                  }),
-                ),
-              ),
+              }))),
+            ) : null,
+          )),
+          h(DisclosureRow, { summary: t('modelCompatDisclosure') },
+            h('div', { className: 'dsh-mc-disclosure-fields' },
+              h(CompatGroupSection, {
+                fields: modelCompatFields.filter(field => field.group === 'common'), drafts: activeCompatDrafts,
+                applicable: modelCompatMap.applicable, existing: modelCompatMap.existing,
+                enumOptions: state.enumOptions, level: 'model', t, onChange: updateModelCompat,
+              }),
+              h(CompatDisclosure, {
+                summary: t('advancedCompatibility'), fields: modelCompatFields.filter(field => field.group === 'advanced'), drafts: activeCompatDrafts,
+                applicable: modelCompatMap.applicable, existing: modelCompatMap.existing,
+                enumOptions: state.enumOptions, level: 'model', t, onChange: updateModelCompat,
+              }),
+              h(CompatDisclosure, {
+                summary: t('anthropicCompatibility'), fields: modelCompatFields.filter(field => field.group === 'anthropic'), drafts: activeCompatDrafts,
+                applicable: modelCompatMap.applicable, existing: modelCompatMap.existing,
+                enumOptions: state.enumOptions, level: 'model', t, onChange: updateModelCompat,
+              }),
             ),
-          ) : null,
-        ),
+          ),
+        ) : null,
 
-    h('div', { className: 'dsh-mc-field', style: { flexDirection: 'row', gap: 8 } },
+    h('div', { className: 'dsh-mc-action-row' },
       h('button', { type: 'button', className: 'dsh-mc-button', onClick: resetProvider }, t('resetProvider')),
       h('button', { type: 'button', className: 'dsh-mc-button', onClick: save }, t('save')),
     ),
@@ -929,6 +956,7 @@ const zh: Record<string, string> = {
   loading: '加载中…',
   loadFailed: '加载失败',
   retry: '重试',
+   reload: '重新加载',
   readOnly: '当前部署为只读模式。',
   namespaceMissing: 'llm-pi-ai 设置命名空间未注册。',
   provider: '提供方',
@@ -938,10 +966,20 @@ const zh: Record<string, string> = {
   advancedCompatibility: '高级兼容性',
   anthropicCompatibility: 'Anthropic 兼容性',
   modelCompatDisclosure: '兼容性覆盖',
+  modelCapabilities: '模型能力',
+  modelSettings: '模型设置',
+  currentModel: '当前模型',
+  configured: '已配置',
+  'subagent.defaultModel': '默认模型',
+  'subagent.allowedModels.selectedSuffix': '个已选择模型',
+  'compat.notConfigured': '未配置',
+  'compat.configured': '已配置',
   inputCapability: '输入能力',
   defaultReasoning: '默认推理等级',
   inherit: '继承',
   saved: '已保存',
+   savedWithPending: '本批次已保存，仍有未保存修改',
+   'compat.clearOverride': '清除覆盖',
   save: '保存能力',
   resetProvider: '恢复提供方默认',
   resetModel: '恢复默认',
@@ -993,6 +1031,7 @@ const zh: Record<string, string> = {
   'subagent.reasoning.auto': '自动',
   'subagent.effectiveNote': '保存后对新建子代理会话生效。',
   'subagent.backendManagesModel': '该子代理后端由其运行时自身管理模型配置。',
+  'subagent.agentOptionsUnsupported': '当前子代理运行时不支持 agentOptions 固定模型配置。',
   'subagent.apply': '应用子代理设置',
   'subagent.savedNewSessions': '已保存，对新的子代理会话生效。',
   'subagent.applyFailed': '保存失败',
@@ -1083,6 +1122,7 @@ const en: Record<string, string> = {
   loading: 'Loading…',
   loadFailed: 'Failed to load',
   retry: 'Retry',
+  reload: 'Reload',
   readOnly: 'Settings are read-only in this deployment.',
   namespaceMissing: 'The llm-pi-ai settings namespace is not registered.',
   provider: 'Provider',
@@ -1092,10 +1132,20 @@ const en: Record<string, string> = {
   advancedCompatibility: 'Advanced Compatibility',
   anthropicCompatibility: 'Anthropic Compatibility',
   modelCompatDisclosure: 'Compatibility Overrides',
+  modelCapabilities: 'Model capabilities',
+  modelSettings: 'Model settings',
+  currentModel: 'Current model',
+  configured: 'Configured',
+  'subagent.defaultModel': 'Default model',
+  'subagent.allowedModels.selectedSuffix': 'selected models',
+  'compat.notConfigured': 'Not configured',
+  'compat.configured': 'Configured',
   inputCapability: 'Input capability',
   defaultReasoning: 'Default reasoning',
   inherit: 'Inherit',
   saved: 'Saved',
+  savedWithPending: 'Batch saved; unsaved changes remain',
+  'compat.clearOverride': 'Clear override',
   save: 'Save capabilities',
   resetProvider: 'Reset provider',
   resetModel: 'Reset model',
@@ -1147,6 +1197,7 @@ const en: Record<string, string> = {
   'subagent.reasoning.auto': 'Auto',
   'subagent.effectiveNote': 'Applies to newly created subagent sessions.',
   'subagent.backendManagesModel': 'This subagent backend manages model configuration in its own runtime.',
+  'subagent.agentOptionsUnsupported': 'The subagent runtime does not support fixed agentOptions model configuration.',
   'subagent.apply': 'Apply subagent settings',
   'subagent.savedNewSessions': 'Saved — applies to new subagent sessions.',
   'subagent.applyFailed': 'Failed to save',

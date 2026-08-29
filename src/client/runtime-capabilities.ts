@@ -11,6 +11,7 @@ import { detectSubagentCapabilities, type SubagentCapabilityInput, type Subagent
 
 export interface RuntimeCapabilities {
   compatFields: Set<string>
+  modelCompatFields: Set<string>
   providerFields: Set<string>
   modelFields: Set<string>
   subagent: SubagentRuntimeCapabilities
@@ -91,6 +92,21 @@ export function schemaEnumValues(schema: unknown, path: readonly string[]): stri
   return values
 }
 
+export interface CompatEnumOptions {
+  maxTokensField: string[]
+  thinkingFormat: string[]
+  cacheControlFormat: string[]
+}
+
+/** Extract the schema-driven enum options the compat renderer needs. */
+export function collectEnumOptions(schema: unknown): CompatEnumOptions {
+  return {
+    maxTokensField: schemaEnumValues(schema, ['providers', 'inner', 'compat', 'maxTokensField']),
+    thinkingFormat: schemaEnumValues(schema, ['providers', 'inner', 'compat', 'thinkingFormat']),
+    cacheControlFormat: schemaEnumValues(schema, ['providers', 'inner', 'compat', 'cacheControlFormat']),
+  }
+}
+
 /**
  * Resolve wire protocols for a provider from explicit `api` and catalog
  * metadata. Provider-name heuristics are intentionally forbidden.
@@ -117,6 +133,55 @@ export function protocolsForProvider(
   return [...protocols]
 }
 
+function modelRecordOf(providerConfig: unknown, model: string): Record<string, unknown> | undefined {
+  const cfg = recordOf(providerConfig)
+  for (const item of Array.isArray(cfg['models']) ? cfg['models'] : []) {
+    const entry = recordOf(item)
+    if (entry['id'] === model) return entry
+  }
+  const override = recordOf(cfg['modelOverrides'])[model]
+  return override !== null && typeof override === 'object' && !Array.isArray(override)
+    ? override as Record<string, unknown>
+    : undefined
+}
+
+/**
+ * Resolve the wire protocol for one selected model.
+ *
+ * Priority (never provider/model name heuristics):
+ * 1. the model's own catalog `api`;
+ * 2. the provider explicit `api`;
+ * 3. the model entry/override `api`;
+ * 4. a catalog group `api` only as a safe fallback.
+ *
+ * Unlike `protocolsForProvider`, this returns the model's protocol, so a mixed
+ * OpenAI/Anthropic catalog never shows one model's fields on another model.
+ */
+export function protocolsForModel(
+  provider: string,
+  model: string,
+  providerConfig: unknown,
+  catalogGroups: unknown[],
+): string[] {
+  const cfg = recordOf(providerConfig)
+  for (const group of Array.isArray(catalogGroups) ? catalogGroups : []) {
+    const g = recordOf(group)
+    if (g['id'] !== provider) continue
+    for (const item of Array.isArray(g['models']) ? g['models'] : []) {
+      const m = recordOf(item)
+      if (m['id'] === model && typeof m['api'] === 'string') return [m['api'] as string]
+    }
+  }
+  if (typeof cfg['api'] === 'string') return [cfg['api'] as string]
+  const modelConfig = modelRecordOf(providerConfig, model)
+  if (modelConfig && typeof modelConfig['api'] === 'string') return [modelConfig['api'] as string]
+  for (const group of Array.isArray(catalogGroups) ? catalogGroups : []) {
+    const g = recordOf(group)
+    if (g['id'] === provider && typeof g['api'] === 'string') return [g['api'] as string]
+  }
+  return []
+}
+
 export interface RuntimeSubagentInput extends SubagentCapabilityInput {
   /** Raw runtime facts from the host service namespace. */
   runtime?: {
@@ -125,6 +190,48 @@ export interface RuntimeSubagentInput extends SubagentCapabilityInput {
     agentOptionsSchemaFields?: string[]
     modelSelectionSettings?: boolean
     providers?: Array<{ name: string; supportsAgentOptions: boolean }>
+  }
+}
+
+function recordOf(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
+}
+
+/**
+ * Unpack the subagent runtime facts that the host service stores under
+ * `value.runtime`. The namespace root also contains writable fields
+ * (`agentOptions`, `modelSelectionSettings`), so the client must read the
+ * nested runtime block for capability detection.
+ */
+export function subagentRuntimeFactsFromValue(value: unknown): RuntimeSubagentInput {
+  const runtime = recordOf(recordOf(value)['runtime'])
+  const providers: Array<{ name: string; supportsAgentOptions: boolean }> = []
+  for (const item of Array.isArray(runtime['providers']) ? runtime['providers'] : []) {
+    const provider = recordOf(item)
+    if (typeof provider['name'] !== 'string' || provider['name'] === '') continue
+    providers.push({
+      name: provider['name'],
+      supportsAgentOptions: provider['supportsAgentOptions'] !== false,
+    })
+  }
+  return {
+    runtime: {
+      effectiveVersion: typeof runtime['effectiveVersion'] === 'string'
+        ? runtime['effectiveVersion'] as string
+        : undefined,
+      toolSubagentSchemaFields: Array.isArray(runtime['toolSubagentSchemaFields'])
+        ? (runtime['toolSubagentSchemaFields'] as string[])
+        : undefined,
+      agentOptionsSchemaFields: Array.isArray(runtime['agentOptionsSchemaFields'])
+        ? (runtime['agentOptionsSchemaFields'] as string[])
+        : undefined,
+      modelSelectionSettings: typeof runtime['modelSelectionSettings'] === 'boolean'
+        ? runtime['modelSelectionSettings'] as boolean
+        : undefined,
+      providers: providers.length > 0 ? providers : undefined,
+    },
   }
 }
 
@@ -143,6 +250,10 @@ export function collectRuntimeCapabilities(
     ...schemaObjectKeys(schema, ['providers', 'inner', 'modelOverrides', 'inner']),
   ])
   const compatFields = schemaObjectKeys(schema, ['providers', 'inner', 'compat'])
+  const modelCompatFields = new Set<string>([
+    ...schemaObjectKeys(schema, ['providers', 'inner', 'models', 'inner', 'compat']),
+    ...schemaObjectKeys(schema, ['providers', 'inner', 'modelOverrides', 'inner', 'compat']),
+  ])
   const runtime = subagent.runtime
   const subagentCaps = detectSubagentCapabilities({
     effectiveVersion: subagent.effectiveVersion ?? runtime?.effectiveVersion,
@@ -162,6 +273,7 @@ export function collectRuntimeCapabilities(
     : subagentCaps
   return {
     compatFields,
+    modelCompatFields,
     providerFields,
     modelFields,
     subagent: resolvedSubagent,

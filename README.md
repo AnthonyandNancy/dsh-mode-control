@@ -295,3 +295,13 @@ drafts, and runtime schema introspection.
 
 Add the plugin to the Harness profile and mount it as a normal DSH plugin.
 The client half registers a **Model Capabilities** section in Settings.
+
+The Model Capabilities settings UI follows DSH's selector-first interaction model.
+Model catalogs and subagent model pools are opened on demand through
+provider-grouped searchable pickers instead of permanent lists. Settings use
+compact rows and progressive disclosure so advanced compatibility, JSON, wire
+values, and thinking budgets appear only when opened.
+
+模型能力设置界面遵循 DSH 的 selector-first 交互模型。模型目录和子代理模型池
+通过按提供方分组、支持搜索的选择器按需打开，而不是永久展示列表；高级兼容性、
+JSON、wire values 与推理预算使用渐进式折叠，页面默认保持紧凑。

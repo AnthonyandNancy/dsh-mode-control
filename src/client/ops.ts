@@ -11,6 +11,7 @@ import {
   ANTHROPIC_REASONING_EFFORT_DEFAULTS,
 } from '../compile.ts'
 import type { PiAiReasoningLevel } from '../types.ts'
+import { protocolsForModel } from './runtime-capabilities.ts'
 export type { PiAiReasoningLevel } from '../types.ts'
 import {
   collectOpsForCompat,
@@ -77,6 +78,37 @@ export function asRecord(value: unknown): Record<string, unknown> {
 
 export function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : []
+}
+
+/**
+ * Model ids the main Model Settings page may edit: declared `models[]`
+ * entries plus `modelOverrides` keys. Catalog-only routes are intentionally
+ * excluded — editing them would look like a save while no mutation targets
+ * them.
+ */
+export function declaredModelIds(providerConfig: unknown): string[] {
+  const cfg = asRecord(providerConfig)
+  const ids = new Set<string>()
+  for (const model of asArray(cfg['models'])) {
+    const entry = asRecord(model)
+    if (typeof entry['id'] === 'string' && entry['id'] !== '') ids.add(entry['id'] as string)
+  }
+  for (const model of Object.keys(asRecord(cfg['modelOverrides']))) ids.add(model)
+  return [...ids]
+}
+
+/** Model ids visible to pickers that may legitimately include catalog routes. */
+export function catalogModelIds(provider: string, providerConfig: unknown, catalogGroups: unknown[]): string[] {
+  const ids = new Set(declaredModelIds(providerConfig))
+  for (const group of catalogGroups) {
+    const g = asRecord(group)
+    if (g['id'] !== provider) continue
+    for (const model of asArray(g['models'])) {
+      const m = asRecord(model)
+      if (typeof m['id'] === 'string' && m['id'] !== '') ids.add(m['id'] as string)
+    }
+  }
+  return [...ids]
 }
 
 export function parseInput(value: unknown): string[] {
@@ -217,6 +249,21 @@ export function isAnthropicProvider(
   return false
 }
 
+/**
+ * Whether a specific selected model speaks Anthropic Messages.
+ *
+ * Model-level reasoning defaults and model compat visibility must follow the
+ * selected model's resolved protocol, not the provider-wide union.
+ */
+export function isAnthropicModel(
+  provider: string,
+  model: string,
+  providerConfig: unknown,
+  catalogGroups: unknown[],
+): boolean {
+  return protocolsForModel(provider, model, providerConfig, catalogGroups).includes('anthropic-messages')
+}
+
 function resolvedAnthropicApi(
   provider: string,
   catalogGroups: unknown[],
@@ -348,50 +395,44 @@ export function collectOpsForProvider(
   provider: string,
   providerConfig: unknown,
   draft: ProviderDraft,
+  dirtyFields?: ReadonlySet<string>,
+  dirtyCompatFields?: ReadonlySet<string>,
 ): SettingsOp[] {
   const ops: SettingsOp[] = []
   const cfg = asRecord(providerConfig)
   const base = ['providers', provider]
+  const manages = (field: string): boolean => dirtyFields === undefined || dirtyFields.has(field)
 
-  const defaultInput = inputFor(draft.defaultInput)
-  if (defaultInput !== undefined) {
-    ops.push({ op: 'set', path: [...base, 'defaultInput'], value: defaultInput })
-  } else if (cfg['defaultInput'] !== undefined) {
-    ops.push({ op: 'unset', path: [...base, 'defaultInput'] })
+  if (manages('defaultInput')) {
+    const value = inputFor(draft.defaultInput)
+    if (value !== undefined) ops.push({ op: 'set', path: [...base, 'defaultInput'], value })
+    else if (cfg['defaultInput'] !== undefined) ops.push({ op: 'unset', path: [...base, 'defaultInput'] })
+  }
+  if (manages('defaultContextWindow')) {
+    const value = capacityValue(draft.defaultContextWindow)
+    if (value !== undefined) ops.push({ op: 'set', path: [...base, 'defaultContextWindow'], value })
+    else if (cfg['defaultContextWindow'] !== undefined) ops.push({ op: 'unset', path: [...base, 'defaultContextWindow'] })
+  }
+  if (manages('defaultMaxTokens')) {
+    const value = capacityValue(draft.defaultMaxTokens)
+    if (value !== undefined) ops.push({ op: 'set', path: [...base, 'defaultMaxTokens'], value })
+    else if (cfg['defaultMaxTokens'] !== undefined) ops.push({ op: 'unset', path: [...base, 'defaultMaxTokens'] })
+  }
+  if (manages('defaultReasoning')) {
+    if (draft.defaultReasoning !== '') ops.push({ op: 'set', path: [...base, 'reasoning'], value: draft.defaultReasoning })
+    else if (cfg['reasoning'] !== undefined) ops.push({ op: 'unset', path: [...base, 'reasoning'] })
+  }
+  if (manages('thinkingBudgets')) {
+    const value = thinkingBudgetsValue(draft.thinkingBudgets)
+    if (value !== undefined) ops.push({ op: 'set', path: [...base, 'thinkingBudgets'], value })
+    else if (cfg['thinkingBudgets'] !== undefined) ops.push({ op: 'unset', path: [...base, 'thinkingBudgets'] })
   }
 
-  const defaultContextWindow = capacityValue(draft.defaultContextWindow)
-  if (defaultContextWindow !== undefined) {
-    ops.push({ op: 'set', path: [...base, 'defaultContextWindow'], value: defaultContextWindow })
-  } else if (cfg['defaultContextWindow'] !== undefined) {
-    ops.push({ op: 'unset', path: [...base, 'defaultContextWindow'] })
-  }
-
-  const defaultMaxTokens = capacityValue(draft.defaultMaxTokens)
-  if (defaultMaxTokens !== undefined) {
-    ops.push({ op: 'set', path: [...base, 'defaultMaxTokens'], value: defaultMaxTokens })
-  } else if (cfg['defaultMaxTokens'] !== undefined) {
-    ops.push({ op: 'unset', path: [...base, 'defaultMaxTokens'] })
-  }
-
-  if (draft.defaultReasoning !== '') {
-    ops.push({ op: 'set', path: [...base, 'reasoning'], value: draft.defaultReasoning })
-  } else if (cfg['reasoning'] !== undefined) {
-    ops.push({ op: 'unset', path: [...base, 'reasoning'] })
-  }
-
-  const thinkingBudgets = thinkingBudgetsValue(draft.thinkingBudgets)
-  if (thinkingBudgets !== undefined) {
-    ops.push({ op: 'set', path: [...base, 'thinkingBudgets'], value: thinkingBudgets })
-  } else if (cfg['thinkingBudgets'] !== undefined) {
-    ops.push({ op: 'unset', path: [...base, 'thinkingBudgets'] })
-  }
-
-  const compatDrafts = draft.compat ?? (draft.adaptiveThinking !== undefined
-    ? { forceAdaptiveThinking: { kind: 'boolean' as const, mode: draft.adaptiveThinking } }
-    : undefined)
-  if (compatDrafts !== undefined) {
-    ops.push(...collectOpsForCompat([...base, 'compat'], cfg['compat'], compatDrafts))
+  const compatDrafts = draft.adaptiveThinking !== undefined
+    ? { ...(draft.compat ?? {}), forceAdaptiveThinking: { kind: 'boolean' as const, mode: draft.adaptiveThinking } }
+    : draft.compat
+  if (compatDrafts !== undefined && (manages('compat') || dirtyCompatFields !== undefined)) {
+    ops.push(...collectOpsForCompat([...base, 'compat'], cfg['compat'], compatDrafts, dirtyCompatFields))
   }
   return ops
 }
@@ -406,44 +447,108 @@ export function collectOpsForProvider(
  *   fields; the whole override object is never replaced and the model key is
  *   never deleted.
  */
+function modelFieldIsDirty(dirtyFields: ReadonlySet<string> | undefined, field: string): boolean {
+  if (dirtyFields === undefined) return true
+  if (field === 'reasoningEfforts') return dirtyFields.has(field) || dirtyFields.has('reasoningMode') || dirtyFields.has('efforts') || dirtyFields.has('wire')
+  return dirtyFields.has(field)
+}
+
+function compatFieldsForDirty(dirtyFields: ReadonlySet<string> | undefined, allowedFields?: ReadonlySet<string>): ReadonlySet<string> | undefined {
+  if (dirtyFields === undefined || dirtyFields.has('compat')) return allowedFields
+  const fields = new Set<string>()
+  for (const field of dirtyFields) if (field.startsWith('compat:')) fields.add(field.slice('compat:'.length))
+  if (allowedFields === undefined) return fields
+  return new Set([...fields].filter(field => allowedFields.has(field)))
+}
+
+function collectOpsForModelOverride(
+  provider: string,
+  model: string,
+  overrides: Record<string, unknown>,
+  draft: ModelDraft,
+  anthropic: boolean,
+  allowedCompatFields?: ReadonlySet<string>,
+  allowedFields?: ReadonlySet<string>,
+): SettingsOp[] {
+  const ops: SettingsOp[] = []
+  const fields = modelCapabilityFields(draft, anthropic)
+  const base = ['providers', provider, 'modelOverrides', model]
+  for (const key of ['input', 'contextWindow', 'maxTokens', 'reasoningEfforts'] as const) {
+    if (allowedFields && !modelFieldIsDirty(allowedFields, key)) continue
+    if (!Object.prototype.hasOwnProperty.call(fields, key)) continue
+    const path = [...base, key]
+    if (fields[key] !== undefined) {
+      const override = Object.prototype.hasOwnProperty.call(overrides, model) ? asRecord(overrides[model]) : {}
+      const equal = (key === 'contextWindow' || key === 'maxTokens')
+        && JSON.stringify(override[key]) === JSON.stringify(fields[key])
+      if (!equal) ops.push({ op: 'set', path, value: fields[key] })
+    } else if (Object.prototype.hasOwnProperty.call(overrides, model)) {
+      const override = asRecord(overrides[model])
+      if (Object.prototype.hasOwnProperty.call(override, key)) ops.push({ op: 'unset', path })
+    }
+  }
+  if (draft.compat !== undefined) {
+    const override = Object.prototype.hasOwnProperty.call(overrides, model) ? asRecord(overrides[model]) : {}
+    const compatFields = compatFieldsForDirty(allowedFields, allowedCompatFields)
+    if (allowedFields === undefined || allowedFields.has('compat') || compatFields !== undefined) {
+      ops.push(...collectOpsForCompat([...base, 'compat'], override['compat'], draft.compat, compatFields))
+    }
+  }
+  return ops
+}
+
 export function collectOpsForModels(
   provider: string,
   providerConfig: unknown,
   drafts: Record<string, ModelDraft>,
-  anthropic = false,
+  anthropic: boolean | ((model: string) => boolean) = false,
+  allowedCompatFields?: ReadonlySet<string>,
+  dirtyModelFields?: ReadonlyMap<string, ReadonlySet<string>>,
 ): SettingsOp[] {
   const ops: SettingsOp[] = []
+  const anthropicFor = (model: string): boolean => typeof anthropic === 'function' ? anthropic(model) : anthropic
   const cfg = asRecord(providerConfig)
   const usesModelsArray = Array.isArray(cfg['models']) && (cfg['models'] as unknown[]).length > 0
   if (usesModelsArray) {
     const current = asArray(cfg['models']).map(entry => ({ ...asRecord(entry) }))
+    const original = JSON.stringify(current)
+    const overrides = asRecord(cfg['modelOverrides'])
     for (const [model, draft] of Object.entries(drafts)) {
-      const fields = modelCapabilityFields(draft, anthropic)
-      let entry = current.find(item => item['id'] === model)
+      const dirtyFields = dirtyModelFields?.get(model)
+      if (dirtyModelFields && !dirtyFields) continue
+      const fields = modelCapabilityFields(draft, anthropicFor(model))
+      const entry = current.find(item => item['id'] === model)
       if (entry === undefined) {
-        entry = { id: model }
-        current.push(entry)
+        if (Object.prototype.hasOwnProperty.call(overrides, model)) ops.push(...collectOpsForModelOverride(provider, model, overrides, draft, anthropicFor(model), allowedCompatFields, dirtyFields))
+        continue
       }
       for (const key of ['input', 'contextWindow', 'maxTokens', 'reasoningEfforts']) {
+        if (!modelFieldIsDirty(dirtyFields, key)) continue
         if (!Object.prototype.hasOwnProperty.call(fields, key)) continue
         if (fields[key] !== undefined) entry[key] = fields[key]
         else delete entry[key]
       }
       if (draft.compat !== undefined) {
-        const merged = mergeCompatDrafts(entry['compat'], draft.compat)
-        if (merged.changed) {
-          if (merged.value === undefined) delete entry['compat']
-          else entry['compat'] = merged.value
+        const compatFields = compatFieldsForDirty(dirtyFields, allowedCompatFields)
+        if (dirtyFields === undefined || dirtyFields.has('compat') || compatFields !== undefined) {
+          const merged = mergeCompatDrafts(entry['compat'], draft.compat, compatFields)
+          if (merged.changed) {
+            if (merged.value === undefined) delete entry['compat']
+            else entry['compat'] = merged.value
+          }
         }
       }
     }
-    ops.push({ op: 'set', path: ['providers', provider, 'models'], value: current })
+    if (dirtyModelFields === undefined || JSON.stringify(current) !== original) ops.push({ op: 'set', path: ['providers', provider, 'models'], value: current })
   } else {
     const overrides = asRecord(cfg['modelOverrides'])
     for (const [model, draft] of Object.entries(drafts)) {
-      const fields = modelCapabilityFields(draft, anthropic)
+      const dirtyFields = dirtyModelFields?.get(model)
+      if (dirtyModelFields && !dirtyFields) continue
+      const fields = modelCapabilityFields(draft, anthropicFor(model))
       const base = ['providers', provider, 'modelOverrides', model]
       for (const key of ['input', 'contextWindow', 'maxTokens', 'reasoningEfforts'] as const) {
+        if (!modelFieldIsDirty(dirtyFields, key)) continue
         if (!Object.prototype.hasOwnProperty.call(fields, key)) continue
         const path = [...base, key]
         if (fields[key] !== undefined) {
@@ -466,7 +571,10 @@ export function collectOpsForModels(
         const override = Object.prototype.hasOwnProperty.call(overrides, model)
           ? asRecord(overrides[model])
           : {}
-        ops.push(...collectOpsForCompat([...base, 'compat'], override['compat'], draft.compat))
+        const compatFields = compatFieldsForDirty(dirtyFields, allowedCompatFields)
+        if (dirtyFields === undefined || dirtyFields.has('compat') || compatFields !== undefined) {
+          ops.push(...collectOpsForCompat([...base, 'compat'], override['compat'], draft.compat, compatFields))
+        }
       }
     }
   }

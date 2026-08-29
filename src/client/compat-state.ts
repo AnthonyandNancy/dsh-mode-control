@@ -23,6 +23,19 @@ export type CompatDraftValue =
 
 export type CompatDrafts = Record<string, CompatDraftValue>
 
+/** Build an inherited draft for every metadata-managed field. */
+export function emptyCompatDrafts(): CompatDrafts {
+  const drafts: CompatDrafts = {}
+  for (const field of COMPAT_FIELDS) {
+    drafts[field.key] = field.kind === 'boolean'
+      ? { kind: 'boolean', mode: 'inherit' }
+      : field.kind === 'enum'
+        ? { kind: 'enum', value: '' }
+        : { kind: 'json', text: '' }
+  }
+  return drafts
+}
+
 /** `undefined → inherit`, `true → enabled`, `false → disabled`. */
 export function parseInheritBoolean(value: unknown): InheritBooleanMode {
   if (value === true) return 'enabled'
@@ -122,6 +135,7 @@ export function collectOpsForCompat(
   basePath: string[],
   existingCompat: unknown,
   drafts: CompatDrafts,
+  allowedFields?: ReadonlySet<string>,
 ): SettingsOp[] {
   const existing = existingCompat !== null && typeof existingCompat === 'object' && !Array.isArray(existingCompat)
     ? existingCompat as Record<string, unknown>
@@ -130,6 +144,11 @@ export function collectOpsForCompat(
   for (const [key, draft] of Object.entries(drafts)) {
     const path = [...basePath, key]
     const exists = Object.prototype.hasOwnProperty.call(existing, key)
+    if (allowedFields && !allowedFields.has(key) && !(
+      (draft.kind === 'boolean' && draft.mode === 'inherit') ||
+      (draft.kind === 'enum' && draft.value === '') ||
+      (draft.kind === 'json' && draft.text.trim() === '')
+    )) continue
     const current = existing[key]
     if (draft.kind === 'boolean') {
       if (draft.mode === 'enabled') {
@@ -173,6 +192,7 @@ export function collectOpsForCompat(
 export function mergeCompatDrafts(
   existing: unknown,
   drafts: CompatDrafts,
+  allowedFields?: ReadonlySet<string>,
 ): { value: Record<string, unknown> | undefined; changed: boolean } {
   const merged: Record<string, unknown> = {}
   if (existing !== null && typeof existing === 'object' && !Array.isArray(existing)) {
@@ -181,6 +201,11 @@ export function mergeCompatDrafts(
   let changed = false
   for (const [key, draft] of Object.entries(drafts)) {
     const exists = Object.prototype.hasOwnProperty.call(merged, key)
+    if (allowedFields && !allowedFields.has(key) && !(
+      (draft.kind === 'boolean' && draft.mode === 'inherit') ||
+      (draft.kind === 'enum' && draft.value === '') ||
+      (draft.kind === 'json' && draft.text.trim() === '')
+    )) continue
     if (draft.kind === 'boolean') {
       if (draft.mode === 'enabled') {
         if (merged[key] !== true) changed = true

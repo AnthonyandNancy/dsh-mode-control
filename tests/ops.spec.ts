@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
+  catalogModelIds,
   collectOpsForAdaptiveThinking,
   collectOpsForModels,
   collectOpsForProvider,
+  declaredModelIds,
   detectDshMode,
+  isAnthropicModel,
   isAnthropicProvider,
   parseModelDraft,
   parseProviderDraft,
@@ -188,6 +191,50 @@ describe('anthropic protocol detection', () => {
   it('does not guess from provider name', () => {
     expect(isAnthropicProvider('anthropic', {}, [])).toBe(false)
     expect(isAnthropicProvider('deepseek', {}, [])).toBe(false)
+  })
+})
+
+describe('model route provenance', () => {
+  it('lists declared models[] entries and override-only routes as editable', () => {
+    const cfg = {
+      models: [{ id: 'declared' }],
+      modelOverrides: { 'override-only': {} },
+    }
+    expect(declaredModelIds(cfg)).toEqual(['declared', 'override-only'])
+  })
+
+  it('never materializes catalog-only routes into the declared list', () => {
+    const groups = [{ id: 'acme', models: [{ id: 'catalog-only' }] }]
+    expect(declaredModelIds({})).toEqual([])
+    expect(catalogModelIds('acme', {}, groups)).toEqual(['catalog-only'])
+  })
+
+  it('deduplicates shared routes across declared and catalog sources', () => {
+    const cfg = { models: [{ id: 'shared' }] }
+    const groups = [{ id: 'acme', models: [{ id: 'shared' }, { id: 'catalog' }] }]
+    expect(catalogModelIds('acme', cfg, groups)).toEqual(['shared', 'catalog'])
+  })
+})
+
+describe('model anthropic detection', () => {
+  it('detects anthropic from the selected model api in a mixed catalog', () => {
+    const groups = [{
+      id: 'acme',
+      models: [
+        { id: 'model-a', api: 'openai-completions' },
+        { id: 'model-b', api: 'anthropic-messages' },
+      ],
+    }]
+    expect(isAnthropicModel('acme', 'model-a', {}, groups)).toBe(false)
+    expect(isAnthropicModel('acme', 'model-b', {}, groups)).toBe(true)
+  })
+
+  it('uses the provider explicit api as fallback for models without their own api', () => {
+    expect(isAnthropicModel('acme', 'model-a', { api: 'anthropic-messages' }, [])).toBe(true)
+  })
+
+  it('does not guess from provider or model names', () => {
+    expect(isAnthropicModel('anthropic', 'claude-3', {}, [])).toBe(false)
   })
 })
 

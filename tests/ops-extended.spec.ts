@@ -171,6 +171,105 @@ describe('modelOverrides extended ops', () => {
 })
 
 describe('models[] extended ops', () => {
+  it('does not set unsupported model compat fields but still allows clearing them', () => {
+    const providerConfig = { modelOverrides: { foo: { compat: { supportsStore: true } } } }
+    const draft = {
+      input: [], reasoningMode: 'inherit' as const, efforts: [], wire: {},
+      compat: {
+        supportsStore: { kind: 'boolean' as const, mode: 'disabled' as const },
+      },
+    }
+    const blocked = collectOpsForModels('acme', providerConfig, { foo: draft }, false, new Set())
+    expect(blocked).toEqual([])
+    const clearable = collectOpsForModels('acme', providerConfig, {
+      foo: { ...draft, compat: { supportsStore: { kind: 'boolean' as const, mode: 'inherit' as const } } },
+    }, false, new Set())
+    expect(clearable).toContainEqual({ op: 'unset', path: ['providers', 'acme', 'modelOverrides', 'foo', 'compat', 'supportsStore'] })
+  })
+  it('preserves mixed model array and override route ownership', () => {
+    const providerConfig = {
+      models: [{ id: 'declared', name: 'Declared' }],
+      modelOverrides: { 'override-only': { maxTokens: 4000, future: true } },
+    }
+    const drafts = {
+      declared: { input: [], reasoningMode: 'inherit' as const, efforts: [], wire: {} },
+      'override-only': { input: ['image'], reasoningMode: 'inherit' as const, efforts: [], wire: {}, maxTokens: '8000' },
+      'catalog-only': { input: ['image'], reasoningMode: 'inherit' as const, efforts: [], wire: {} },
+    }
+    const ops = collectOpsForModels('acme', providerConfig, drafts)
+    expect(ops).toContainEqual({ op: 'set', path: ['providers', 'acme', 'modelOverrides', 'override-only', 'input'], value: ['image'] })
+    expect(ops).toContainEqual({ op: 'set', path: ['providers', 'acme', 'modelOverrides', 'override-only', 'maxTokens'], value: 8000 })
+    expect((ops.find(op => op.path.at(-1) === 'models')?.value as Array<Record<string, unknown>>).map(entry => entry.id)).toEqual(['declared'])
+  })
+
+  it('does not write unsupported compat fields in a declared model entry', () => {
+    const providerConfig = { models: [{ id: 'foo', compat: { supportsStore: true } }] }
+    const draft = {
+      input: [], reasoningMode: 'inherit' as const, efforts: [], wire: {},
+      compat: { supportsStore: { kind: 'boolean' as const, mode: 'disabled' as const } },
+    }
+    expect(collectOpsForModels('acme', providerConfig, { foo: draft }, false, new Set())).toEqual([
+      { op: 'set', path: ['providers', 'acme', 'models'], value: [{ id: 'foo', compat: { supportsStore: true } }] },
+    ])
+  })
+
+  it('applies per-model anthropic wire defaults when given a model resolver', () => {
+    const providerConfig = {
+      modelOverrides: { a: {}, b: {} },
+    }
+    const drafts = {
+      a: { input: [], reasoningMode: 'custom' as const, efforts: ['minimal'], wire: {} },
+      b: { input: [], reasoningMode: 'custom' as const, efforts: ['minimal'], wire: {} },
+    }
+    const ops = collectOpsForModels('acme', providerConfig, drafts, (model: string) => model === 'b')
+    expect(ops).toContainEqual({
+      op: 'set', path: ['providers', 'acme', 'modelOverrides', 'a', 'reasoningEfforts'], value: { minimal: 'minimal' },
+    })
+    expect(ops).toContainEqual({
+      op: 'set', path: ['providers', 'acme', 'modelOverrides', 'b', 'reasoningEfforts'], value: { minimal: 'low' },
+    })
+  })
+
+  it('maps reasoning draft changes to the persisted reasoningEfforts field', () => {
+    const ops = collectOpsForModels('acme', { models: [{ id: 'declared', reasoningEfforts: { low: 'low' } }] }, {
+      declared: { input: [], reasoningMode: 'custom', efforts: ['high'], wire: { high: 'high' }, contextWindow: '', maxTokens: '', compat: {} },
+    }, false, undefined, new Map([['declared', new Set(['efforts', 'wire', 'reasoningMode'])]]))
+    expect(ops).toContainEqual({ op: 'set', path: ['providers', 'acme', 'models'], value: [{ id: 'declared', reasoningEfforts: { high: 'high' } }] })
+  })
+
+  it('does not collect model arrays when only provider fields are dirty', () => {
+    expect(collectOpsForModels('acme', { models: [{ id: 'declared', input: ['text'] }] }, {
+      declared: { input: ['image'], reasoningMode: 'inherit', efforts: [], wire: {}, contextWindow: '', maxTokens: '', compat: {} },
+    }, false, undefined, new Map())).toEqual([])
+  })
+
+  it('preserves untouched model entries during a rebased save', () => {
+    const ops = collectOpsForModels('acme', {
+      models: [
+        { id: 'declared', input: ['text'], remoteOnly: 'new' },
+        { id: 'untouched', input: ['text'], remoteOnly: 'fresh' },
+      ],
+    }, {
+      declared: { input: ['image'], reasoningMode: 'inherit' as const, efforts: [], wire: {}, contextWindow: '', maxTokens: '', compat: {} },
+      untouched: { input: ['audio'], reasoningMode: 'inherit' as const, efforts: [], wire: {}, contextWindow: '', maxTokens: '', compat: {} },
+    }, false, undefined, new Map([['declared', new Set(['input'])]]))
+    expect(ops).toEqual([{ op: 'set', path: ['providers', 'acme', 'models'], value: [
+      { id: 'declared', input: ['image'], remoteOnly: 'new' },
+      { id: 'untouched', input: ['text'], remoteOnly: 'fresh' },
+    ] }])
+  })
+
+  it('does not materialize catalog-only draft models into models[]', () => {
+    const providerConfig = { models: [{ id: 'declared', name: 'Declared' }] }
+    const drafts = {
+      declared: { input: [], reasoningMode: 'inherit' as const, efforts: [], wire: {} },
+      'catalog-only': { input: ['image'], reasoningMode: 'inherit' as const, efforts: [], wire: {} },
+    }
+    const ops = collectOpsForModels('acme', providerConfig, drafts)
+    expect(ops).toHaveLength(1)
+    expect((ops[0].value as Array<Record<string, unknown>>).map(entry => entry.id)).toEqual(['declared'])
+  })
+
   it('preserves unknown fields and unknown compat when saving model fields', () => {
     const providerConfig = {
       models: [

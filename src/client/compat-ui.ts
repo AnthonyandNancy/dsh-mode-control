@@ -1,15 +1,7 @@
-/**
- * Generic compat field UI built from the metadata registry.
- *
- * Provider JSX and Model JSX both render through these components, so a new
- * compat field only needs a metadata entry + i18n strings — not a second UI
- * implementation.
- */
-
 import { createElement } from 'react'
 import type { CompatFieldDefinition } from './compat-fields.ts'
 import type { CompatDraftValue } from './compat-state.ts'
-import { Dropdown, Field, TextArea, Disclosure } from './ui.ts'
+import { CompactSelect, DisclosureRow, SettingRow, TextArea } from './ui.ts'
 
 export interface CompatFieldControlProps {
   field: CompatFieldDefinition
@@ -17,7 +9,6 @@ export interface CompatFieldControlProps {
   applicable: boolean
   existing: boolean
   enumOptions?: string[]
-  /** `provider` or `model` changes the inherit label (auto / inherit provider). */
   level: 'provider' | 'model'
   t: (key: string) => string
   onChange: (value: CompatDraftValue) => void
@@ -51,56 +42,100 @@ function enumOptions(
   schemaOptions: string[] | undefined,
   t: (key: string) => string,
 ): Array<{ value: string; label: string }> {
-  const options: Array<{ value: string; label: string }> = [
+  return [
     { value: '', label: field.key === 'thinkingFormat' ? t('compat.format.auto') : t('compat.auto') },
+    ...(schemaOptions ?? []).map(value => ({ value, label: value })),
   ]
-  for (const value of schemaOptions ?? []) {
-    options.push({ value, label: value })
-  }
-  return options
+}
+
+function defaultDraft(field: CompatFieldDefinition): CompatDraftValue {
+  if (field.kind === 'boolean') return { kind: 'boolean', mode: 'inherit' }
+  if (field.kind === 'enum') return { kind: 'enum', value: '' }
+  return { kind: 'json', text: '' }
+}
+
+export interface CompatSelectState {
+  options: Array<{ value: string; label: string }>
+  disabled: boolean
+}
+
+/**
+ * Unsupported boolean/enum compat controls are clear-only: the select is
+ * disabled and shows only the current persisted value (or nothing), and a
+ * separate clear action produces the exact unset. No new unsupported value can
+ * be written.
+ */
+export function compatSelectState(
+  field: CompatFieldDefinition,
+  applicable: boolean,
+  schemaEnum: string[] | undefined,
+  value: string,
+  level: 'provider' | 'model',
+  t: (key: string) => string,
+): CompatSelectState {
+  const all = field.kind === 'boolean'
+    ? field.optionStyle === 'developer-role'
+      ? developerRoleOptions(level, t)
+      : booleanOptions(level, t)
+    : enumOptions(field, schemaEnum, t)
+  if (applicable) return { options: all, disabled: false }
+  const current = all.find(option => option.value === value)
+  return { options: current ? [current] : [], disabled: true }
 }
 
 export function CompatFieldControl(props: CompatFieldControlProps): any {
   const { field, draft, applicable, existing, enumOptions: schemaEnum, level, t, onChange } = props
   const h = createElement
+  const warning = !applicable && existing ? t('compat.notApplicableWarning') : undefined
+  const label = t(field.labelKey)
   const description = t(field.descriptionKey)
-  const warning = !applicable && existing
-    ? h('p', { className: 'dsh-mc-muted', style: { margin: 0 } }, t('compat.notApplicableWarning'))
-    : null
 
-  let control: any
-  if (field.kind === 'boolean') {
-    const options = field.optionStyle === 'developer-role'
-      ? developerRoleOptions(level, t)
-      : booleanOptions(level, t)
-    control = h(Dropdown, {
-      value: draft.kind === 'boolean' ? draft.mode : 'inherit',
-      options,
-      onChange: (mode: string) => onChange({ kind: 'boolean', mode: mode as any }),
-      placeholder: t('compat.auto'),
-      ariaLabel: t(field.labelKey),
-    })
-  } else if (field.kind === 'enum') {
-    control = h(Dropdown, {
-      value: draft.kind === 'enum' ? draft.value : '',
-      options: enumOptions(field, schemaEnum, t),
-      onChange: (value: string) => onChange({ kind: 'enum', value }),
-      placeholder: t('compat.auto'),
-      ariaLabel: t(field.labelKey),
-    })
-  } else {
-    control = h(TextArea, {
-      value: draft.kind === 'json' ? draft.text : '',
-      placeholder: '{}',
-      ariaLabel: t(field.labelKey),
-      onChange: (text: string) => onChange({ kind: 'json', text }),
-    })
+  if (field.kind === 'json') {
+    const text = draft.kind === 'json' ? draft.text : ''
+    return h(DisclosureRow, {
+      summary: label,
+      value: text.trim() === '' ? t('compat.notConfigured') : t('compat.configured'),
+      title: description,
+      description,
+    }, h('div', { className: 'dsh-mc-json-editor' },
+      warning ? h('p', { className: 'dsh-mc-setting-warning' }, warning) : null,
+      h(TextArea, {
+        value: text,
+        placeholder: '{}',
+        ariaLabel: label,
+        onChange: (next: string) => onChange({ kind: 'json', text: next }),
+         disabled: !applicable,
+       }),
+       !applicable ? h('button', { type: 'button', className: 'dsh-mc-link-button', onClick: () => onChange({ kind: 'json', text: '' }) }, t('compat.clearOverride')) : null,
+    ))
   }
 
-  return h(Field, { label: t(field.labelKey), description },
-    control,
+  const value = field.kind === 'boolean'
+    ? draft.kind === 'boolean' ? draft.mode : 'inherit'
+    : draft.kind === 'enum' ? draft.value : ''
+  const selectState = compatSelectState(field, applicable, schemaEnum, value, level, t)
+  return h(SettingRow, {
+    label,
+    description,
     warning,
-  )
+    control: h('div', { className: 'dsh-mc-compat-control' },
+      h(CompactSelect, {
+        value,
+        options: selectState.options,
+        disabled: selectState.disabled,
+        onChange: (next: string) => onChange(field.kind === 'boolean'
+          ? { kind: 'boolean', mode: next as 'inherit' | 'enabled' | 'disabled' }
+          : { kind: 'enum', value: next }),
+        placeholder: t('compat.auto'),
+        ariaLabel: label,
+      }),
+      !applicable && existing
+        ? h('button', { type: 'button', className: 'dsh-mc-link-button', onClick: () => onChange(field.kind === 'boolean'
+            ? { kind: 'boolean', mode: 'inherit' }
+            : { kind: 'enum', value: '' }) }, t('compat.clearOverride'))
+        : null,
+    ),
+  })
 }
 
 export interface CompatGroupSectionProps {
@@ -116,23 +151,19 @@ export interface CompatGroupSectionProps {
 }
 
 export function CompatGroupSection(props: CompatGroupSectionProps): any {
-  const { title, fields, drafts, applicable, existing, enumOptions, level, t, onChange } = props
+  const { title, fields, drafts, applicable, existing, enumOptions: enumValues, level, t, onChange } = props
   const h = createElement
   const visible = fields.filter(field => applicable[field.key] || existing[field.key])
   if (visible.length === 0) return null
-  return h('div', { className: 'dsh-mc-card' },
+  return h('div', { className: 'dsh-mc-compat-group' },
     title ? h('h3', { className: 'dsh-mc-section-title' }, title) : null,
     visible.map(field => h(CompatFieldControl, {
       key: field.key,
       field,
-      draft: drafts[field.key] ?? (field.kind === 'boolean'
-        ? { kind: 'boolean', mode: 'inherit' }
-        : field.kind === 'enum'
-          ? { kind: 'enum', value: '' }
-          : { kind: 'json', text: '' }),
+      draft: drafts[field.key] ?? defaultDraft(field),
       applicable: applicable[field.key] ?? false,
       existing: existing[field.key] ?? false,
-      enumOptions: enumOptions?.[field.key],
+      enumOptions: enumValues?.[field.key],
       level,
       t,
       onChange: (value: CompatDraftValue) => onChange(field.key, value),
@@ -140,36 +171,24 @@ export function CompatGroupSection(props: CompatGroupSectionProps): any {
   )
 }
 
-export interface CompatDisclosureProps {
+export interface CompatDisclosureProps extends CompatGroupSectionProps {
   summary: string
-  fields: CompatFieldDefinition[]
-  drafts: Record<string, CompatDraftValue>
-  applicable: Record<string, boolean>
-  existing: Record<string, boolean>
-  enumOptions?: Record<string, string[]>
-  level: 'provider' | 'model'
-  t: (key: string) => string
-  onChange: (key: string, value: CompatDraftValue) => void
 }
 
 export function CompatDisclosure(props: CompatDisclosureProps): any {
-  const { summary, fields, drafts, applicable, existing, enumOptions, level, t, onChange } = props
+  const { summary, fields, drafts, applicable, existing, enumOptions: enumValues, level, t, onChange } = props
   const h = createElement
   const visible = fields.filter(field => applicable[field.key] || existing[field.key])
   if (visible.length === 0) return null
-  return h(Disclosure, { summary },
+  return h(DisclosureRow, { summary },
     h('div', { className: 'dsh-mc-disclosure-fields' },
       visible.map(field => h(CompatFieldControl, {
         key: field.key,
         field,
-        draft: drafts[field.key] ?? (field.kind === 'boolean'
-          ? { kind: 'boolean', mode: 'inherit' }
-          : field.kind === 'enum'
-            ? { kind: 'enum', value: '' }
-            : { kind: 'json', text: '' }),
+        draft: drafts[field.key] ?? defaultDraft(field),
         applicable: applicable[field.key] ?? false,
         existing: existing[field.key] ?? false,
-        enumOptions: enumOptions?.[field.key],
+        enumOptions: enumValues?.[field.key],
         level,
         t,
         onChange: (value: CompatDraftValue) => onChange(field.key, value),
