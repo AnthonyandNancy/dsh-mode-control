@@ -284,6 +284,7 @@ export function collectRuntimeCapabilities(
   ])
   const runtime = subagent.runtime
   const subagentCaps = detectSubagentCapabilities({
+    entryFound: subagent.entryFound ?? runtime?.entryFound,
     effectiveVersion: subagent.effectiveVersion ?? runtime?.effectiveVersion,
     toolSubagentSchemaFields: subagent.toolSubagentSchemaFields ?? (
       runtime?.toolSubagentSchemaFields ? new Set(runtime.toolSubagentSchemaFields) : undefined

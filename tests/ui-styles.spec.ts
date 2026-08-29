@@ -14,13 +14,27 @@ describe('DSH settings visual regression', () => {
     expect(CAPABILITIES_CSS).not.toContain('margin-left:4px;padding-left:10px')
   })
 
-  it('marks CompactSelect and ModelRoutePicker triggers as settings controls', () => {
+  it('keeps subsection bodies free of structural padding so depth is the only indent source', () => {
+    expect(CAPABILITIES_CSS).toContain('.dsh-mc-subsection-body{min-width:0;display:flex;flex-direction:column;padding-left:0;gap:4px}')
+    expect(CAPABILITIES_CSS).not.toContain('.dsh-mc-subsection-body{min-width:0;display:flex;flex-direction:column;padding-left:12px')
+  })
+
+  it('renders one unified DSH settings trigger for CompactSelect and ModelRoutePicker', () => {
     const uiSource = source('ui.ts')
     const pickerSource = source('model-picker.ts')
-    expect(uiSource).toContain('dsh-mc-settings-control')
-    expect(pickerSource).toContain('dsh-mc-settings-control')
+    expect(uiSource).toContain('SettingsSelectTrigger')
+    expect(uiSource).toContain('dsh-mc-settings-trigger')
+    expect(pickerSource).toContain('SettingsSelectTrigger')
     expect(uiSource).not.toContain('composer-transparent')
     expect(pickerSource).not.toContain('composer-transparent')
+  })
+
+  it('styles the settings trigger as a neutral filled capsule, not a rectangular input', () => {
+    expect(CAPABILITIES_CSS).toContain('.dsh-mc-settings-trigger{box-sizing:border-box;height:36px;min-height:36px;')
+    expect(CAPABILITIES_CSS).toContain('border:1px solid transparent;')
+    expect(CAPABILITIES_CSS).toContain('background:var(--dsw-alias-interactive-bg-hover-solid)')
+    expect(CAPABILITIES_CSS).toContain('border-radius:18px')
+    expect(CAPABILITIES_CSS).not.toContain('.dsh-mc-compact-trigger,.dsh-mc-picker-trigger{')
   })
 
   it('styles Save primary and Reset secondary as 36px DSH pills', () => {
@@ -41,6 +55,12 @@ describe('DSH settings visual regression', () => {
     expect(indexSource).toContain("className: 'dsh-mc-button dsh-mc-button-primary'")
     expect(indexSource).toContain("className: 'dsh-mc-button dsh-mc-button-secondary'")
     expect(indexSource).toContain("className: 'dsh-mc-button dsh-mc-button-dense'")
+  })
+
+  it('keeps the save button enabled when clean and only disables while saving', () => {
+    const indexSource = source('index.ts')
+    expect(indexSource).toContain("saveButtonDisabled(dirtyProvidersRef.current.size > 0, saveFeedback.phase)")
+    expect(indexSource).not.toContain("!hasDirty || phase === 'saving'")
   })
 
   it('generates DisclosureRow depth classes from the explicit depth prop', () => {

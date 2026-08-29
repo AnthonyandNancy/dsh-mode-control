@@ -152,6 +152,43 @@ export interface CompactSelectProps {
   disabled?: boolean
 }
 
+export interface SettingsSelectTriggerProps {
+  label: string
+  open: boolean
+  disabled?: boolean
+  onClick: () => void
+  ariaLabel?: string
+  className?: string
+  title?: string
+  onKeyDown?: (event: KeyboardEvent) => void
+  triggerRef?: MutableRefObject<HTMLButtonElement | null>
+  'aria-controls'?: string
+}
+
+/**
+ * Single visual chrome for every DSH-style settings selector. `CompactSelect`
+ * and `ModelRoutePicker` must render through this component so Provider /
+ * Model / Reasoning / Compat / Subagent controls share one trigger surface.
+ */
+export function SettingsSelectTrigger(props: SettingsSelectTriggerProps): any {
+  const h = createElement
+  return h('button', {
+    ref: props.triggerRef,
+    type: 'button',
+    className: `dsh-mc-settings-trigger${props.className ? ` ${props.className}` : ''}`,
+    'aria-label': props.ariaLabel,
+    'aria-haspopup': 'listbox',
+    'aria-expanded': props.open,
+    title: props.title,
+    disabled: props.disabled,
+    onClick: props.onClick,
+    onKeyDown: props.onKeyDown,
+  },
+    h('span', { className: 'dsh-mc-settings-trigger-label' }, props.label),
+    h(ChevronDownIcon, { open: props.open }),
+  )
+}
+
 export function CompactSelect(props: CompactSelectProps): any {
   const h = createElement
   const [open, setOpen] = useState(false)
@@ -225,15 +262,14 @@ export function CompactSelect(props: CompactSelectProps): any {
     items[next]?.focus()
   }
   return h('div', { ref: rootRef, className: 'dsh-mc-compact-select', onKeyDown },
-    h('button', {
-      ref: triggerRef,
-      type: 'button',
-      className: 'dsh-mc-compact-trigger dsh-mc-settings-control',
-      'aria-label': compactSelectAccessibleLabel(props.ariaLabel, selected?.label, props.placeholder),
-      'aria-haspopup': 'listbox',
-      'aria-expanded': open,
-      'aria-controls': open ? `${id}-listbox` : undefined,
+    h(SettingsSelectTrigger, {
+      triggerRef,
+      label: selected?.label ?? props.placeholder ?? '',
+      open,
       disabled: props.disabled,
+      ariaLabel: compactSelectAccessibleLabel(props.ariaLabel, selected?.label, props.placeholder),
+      'aria-controls': open ? `${id}-listbox` : undefined,
+      className: 'dsh-mc-settings-control',
       onKeyDown: (event: KeyboardEvent) => {
         if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'Enter' || event.key === ' ') {
           event.preventDefault()
@@ -243,7 +279,7 @@ export function CompactSelect(props: CompactSelectProps): any {
         }
       },
       onClick: () => setOpen(previous => !previous),
-    }, h('span', { className: 'dsh-mc-compact-trigger-label' }, selected?.label ?? props.placeholder ?? ''), h(ChevronDownIcon, { open })),
+    }),
     open ? h('div', { id: `${id}-listbox`, className: 'dsh-mc-compact-menu', role: 'listbox', 'aria-label': props.ariaLabel }, props.options.map((option, index) => h('button', {
       key: option.value,
       ref: (node: HTMLButtonElement | null): void => { itemRefs.current[index] = node },

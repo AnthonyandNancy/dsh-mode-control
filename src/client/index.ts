@@ -85,8 +85,8 @@ export interface SaveFeedbackState {
   message?: string
 }
 
-export function saveButtonDisabled(hasDirty: boolean, phase: SavePhase): boolean {
-  return !hasDirty || phase === 'saving'
+export function saveButtonDisabled(_hasDirty: boolean, phase: SavePhase): boolean {
+  return phase === 'saving'
 }
 
 const EMPTY_RUNTIME_CAPS: RuntimeCapabilities = {
@@ -532,7 +532,11 @@ function CapabilitiesSection(props: any): any {
   }
 
   const save = (): void => {
-    if (state.status !== 'ready' || state.selectedProvider === '' || dirtyProvidersRef.current.size === 0 || saveInFlightRef.current) return
+    if (state.status !== 'ready' || state.selectedProvider === '' || saveInFlightRef.current) return
+    if (dirtyProvidersRef.current.size === 0) {
+      setSaveFeedback({ phase: 'success', message: t('alreadyUpToDate') })
+      return
+    }
     saveInFlightRef.current = true
     setSaveFeedback({ phase: 'saving', message: t('saving') })
     let ops: ReturnType<typeof collectOpsForAllProviders>
@@ -724,6 +728,7 @@ function CapabilitiesSection(props: any): any {
       h(Subsection, { title: t('defaultCapabilities') },
         h(SettingRow, {
           label: t('inputCapability'),
+          depth: 1,
           control: h('div', { className: 'dsh-mc-chips' }, MODALITIES.map(modality => h(Chip, {
             key: modality,
             label: modalityLabel(modality),
@@ -733,16 +738,19 @@ function CapabilitiesSection(props: any): any {
         }),
         state.runtimeCaps.providerFields.has('defaultContextWindow') ? h(SettingRow, {
           label: t('defaultContextWindow'),
+          depth: 1,
           control: h(InlineNumberEditor, { value: providerDraft.defaultContextWindow ?? '', onChange: value => updateProviderDraft({ defaultContextWindow: value }), placeholder: t('inherit'), ariaLabel: t('defaultContextWindow') }),
         }) : null,
         state.runtimeCaps.providerFields.has('defaultMaxTokens') ? h(SettingRow, {
           label: t('defaultMaxTokens'),
+          depth: 1,
           control: h(InlineNumberEditor, { value: providerDraft.defaultMaxTokens ?? '', onChange: value => updateProviderDraft({ defaultMaxTokens: value }), placeholder: t('inherit'), ariaLabel: t('defaultMaxTokens') }),
         }) : null,
       ),
       h(Subsection, { title: t('reasoningCapabilities') },
         h(SettingRow, {
           label: t('defaultRequestReasoning'),
+          depth: 1,
           title: t('defaultReasoningHint'),
           description: t('defaultReasoningHint'),
           warning: providerDefaultMissing.length > 0 ? t('defaultReasoningPartialWarning') : undefined,
@@ -756,6 +764,7 @@ function CapabilitiesSection(props: any): any {
         }),
         anthropic ? h(SettingRow, {
           label: t('anthropicReasoningEffort'),
+          depth: 1,
           control: h(CompactSelect, {
             value: providerDraft.adaptiveThinking,
             options: [{ value: 'inherit', label: t('inherit') }, { value: 'enabled', label: t('adaptiveEnabled') }, { value: 'disabled', label: t('adaptiveDisabled') }],
@@ -763,10 +772,11 @@ function CapabilitiesSection(props: any): any {
             ariaLabel: t('anthropicReasoningEffort'),
           }),
         }) : null,
-        h(DisclosureRow, { summary: t('thinkingBudgets'), value: Object.keys(providerDraft.thinkingBudgets ?? {}).length === 0 ? t('inherit') : t('configured') },
+        h(DisclosureRow, { summary: t('thinkingBudgets'), value: Object.keys(providerDraft.thinkingBudgets ?? {}).length === 0 ? t('inherit') : t('configured'), depth: 1 },
           h('div', { className: 'dsh-mc-setting-rows' }, ['minimal', 'low', 'medium', 'high'].map(level => h(SettingRow, {
             key: level,
             label: levelLabel(level),
+            depth: 2,
             density: 'nested',
             control: h(InlineNumberEditor, {
               value: providerDraft.thinkingBudgets?.[level] ?? '',
@@ -826,6 +836,7 @@ function CapabilitiesSection(props: any): any {
         h(Subsection, { title: t('basicCapabilities') },
           h(SettingRow, {
             label: t('currentModel'),
+            depth: 1,
             control: h(ModelRoutePicker, {
               options: buildProviderModelRouteOptions(provider, editableModelsByProvider[provider] ?? [], { current: { provider, model: activeModel } }),
               value: { provider, model: activeModel },
@@ -839,6 +850,7 @@ function CapabilitiesSection(props: any): any {
           }),
           h(SettingRow, {
             label: t('inputCapability'),
+            depth: 1,
             description: `${t('inputEffective')}：${resolvedInput.join(', ')} · ${resolvedSource}`,
             control: h('div', { className: 'dsh-mc-chips' }, MODALITIES.map(modality => h(Chip, {
               key: modality,
@@ -849,16 +861,19 @@ function CapabilitiesSection(props: any): any {
           }),
           state.runtimeCaps.modelFields.has('contextWindow') ? h(SettingRow, {
             label: t('modelContextWindow'),
+            depth: 1,
             control: h(InlineNumberEditor, { value: activeDraft.contextWindow ?? '', onChange: value => updateModelDraft({ contextWindow: value }), placeholder: t('inherit'), ariaLabel: t('modelContextWindow') }),
           }) : null,
           state.runtimeCaps.modelFields.has('maxTokens') ? h(SettingRow, {
             label: t('modelMaxTokens'),
+            depth: 1,
             control: h(InlineNumberEditor, { value: activeDraft.maxTokens ?? '', onChange: value => updateModelDraft({ maxTokens: value }), placeholder: t('inherit'), ariaLabel: t('modelMaxTokens') }),
           }) : null,
         ),
         h(Subsection, { title: t('reasoningConfig') },
           h(SettingRow, {
             label: t('reasoningCapability'),
+            depth: 1,
             control: h(CompactSelect, {
               value: activeDraft.reasoningMode,
               options: [{ value: 'inherit', label: t('inherit') }, { value: 'unsupported', label: t('unsupported') }, { value: 'custom', label: t('custom') }],
@@ -870,26 +885,30 @@ function CapabilitiesSection(props: any): any {
           }),
           h(SettingRow, {
             label: t('dshCurrentReasoning'),
+            depth: 1,
             control: h('span', { className: 'dsh-mc-muted' }, runtimeLabel),
           }),
           activeDraft.reasoningMode === 'custom' ? h(DisclosureRow, {
             summary: t('declaredReasoningLevels'),
             value: customEffortsLabel,
             description: activeDraft.efforts.length === 0 ? t('reasoningEmptyHint') : undefined,
+            depth: 1,
           },
           h('div', { className: 'dsh-mc-setting-rows dsh-mc-reasoning-levels' },
             h(SettingRow, {
               label: t('declaredReasoningLevels'),
+              depth: 2,
               density: 'nested',
               control: h('div', { className: 'dsh-mc-chips' }, LEVELS.map(level => h(Chip, {
                 key: level, label: levelLabel(level), active: activeDraft.efforts.includes(level), onClick: () => toggleReasoningLevel(level),
               }))),
             }),
           )) : null,
-          activeDraft.reasoningMode === 'custom' ? h(DisclosureRow, { summary: t('reasoningWire'), value: t('configured') },
+          activeDraft.reasoningMode === 'custom' ? h(DisclosureRow, { summary: t('reasoningWire'), value: t('configured'), depth: 1 },
             h('div', { className: 'dsh-mc-setting-rows' }, activeDraft.efforts.map(level => h(SettingRow, {
               key: level,
               label: levelLabel(level),
+              depth: 2,
               density: 'nested',
               control: h('input', {
                 className: 'dsh-mc-inline-input',
@@ -901,6 +920,7 @@ function CapabilitiesSection(props: any): any {
           ) : null,
           activeDraft.reasoningMode === 'custom' && mismatch.mismatch ? h(SettingRow, {
             label: t('declaredReasoningLevels'),
+            depth: 1,
             description: t('reasoningMismatchHint'),
             warning: mismatch.unresolved ? t('reasoningUnresolvedWarning') : t('reasoningMismatchWarning'),
             control: h('span', { className: 'dsh-mc-muted' }, mismatch.missing.map(levelLabel).join(' · ')),
@@ -984,6 +1004,7 @@ export const zh: Record<string, string> = {
   inherit: '继承',
   saving: '保存中…',
   saved: '已保存',
+  alreadyUpToDate: '已是最新',
   saveFailed: '保存失败',
    savedWithPending: '本批次已保存，仍有未保存修改',
    'compat.clearOverride': '清除覆盖',
@@ -1023,6 +1044,8 @@ export const zh: Record<string, string> = {
   reasoningWire: 'Wire 映射',
   resolvedCapability: '解析后能力',
   'subagent.title': '子代理',
+  'subagent.warning.unverified': '子代理版本无法确认，以下设置按当前检测到的 Schema 显示；低版本可能不生效。',
+  'subagent.warning.legacy': '当前子代理版本低于已验证范围，部分设置可能不生效。',
   'subagent.legacy.description': '固定模型模式：为新子代理实例写入 provider/model/maxTokens。',
   'subagent.native.description': '动态模型选择：使用官方 subagent-model-selection 命名空间。',
   'subagent.status.legacy': '固定模型',
@@ -1178,6 +1201,7 @@ export const en: Record<string, string> = {
   inherit: 'Inherit',
   saving: 'Saving…',
   saved: 'Saved',
+  alreadyUpToDate: 'Already up to date',
   saveFailed: 'Save failed',
   savedWithPending: 'Batch saved; unsaved changes remain',
   'compat.clearOverride': 'Clear override',
@@ -1217,6 +1241,8 @@ export const en: Record<string, string> = {
   reasoningWire: 'Wire mapping',
   resolvedCapability: 'Resolved capability',
   'subagent.title': 'Subagents',
+  'subagent.warning.unverified': 'Subagent version could not be confirmed. Settings below follow the detected Schema; older versions may not apply them.',
+  'subagent.warning.legacy': 'The subagent version is below the verified range; some settings may not apply.',
   'subagent.legacy.description': 'Fixed model mode: writes provider/model/maxTokens for new subagent instances.',
   'subagent.native.description': 'Dynamic selection: uses the official subagent-model-selection namespace.',
   'subagent.status.legacy': 'Fixed model',

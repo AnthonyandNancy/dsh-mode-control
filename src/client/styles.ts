@@ -25,7 +25,7 @@ export const CAPABILITIES_CSS = `
 .dsh-mc-subsection{min-width:0;display:flex;flex-direction:column;gap:8px}
 .dsh-mc-subsection-title{color:var(--dsw-alias-label-primary);margin:0;padding-left:0;font-size:13px;font-weight:600;line-height:20px}
 .dsh-mc-subsection + .dsh-mc-subsection{border-top:1px solid var(--dsw-alias-border-l2);padding-top:14px;margin-top:14px}
-.dsh-mc-subsection-body{min-width:0;display:flex;flex-direction:column;padding-left:12px;gap:4px}
+.dsh-mc-subsection-body{min-width:0;display:flex;flex-direction:column;padding-left:0;gap:4px}
 .dsh-mc-subagent-description{margin:-4px 0 0}
 .dsh-mc-section-caption{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
 
@@ -82,13 +82,13 @@ export const CAPABILITIES_CSS = `
 .dsh-mc-link-button{background:none;border:none;color:var(--dsw-alias-primary-default);font-size:13px;line-height:20px;font-weight:500;cursor:pointer;padding:0}
 .dsh-mc-link-button:hover{text-decoration:underline}
 
-/* Select / picker trigger: identical settings chrome. */
+/* Select / picker trigger: one DSH settings capsule for every selector. */
 .dsh-mc-compact-select{position:relative;min-width:0}
-.dsh-mc-compact-trigger,.dsh-mc-picker-trigger{box-sizing:border-box;height:32px;min-height:32px;max-width:240px;color:var(--dsw-alias-label-primary);cursor:pointer;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1);align-items:center;gap:8px;padding:0 32px 0 10px;font-size:14px;line-height:22px;font-weight:400;display:flex;outline:none}
-.dsh-mc-compact-trigger:hover:not(:disabled),.dsh-mc-picker-trigger:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
-.dsh-mc-compact-trigger:focus-visible,.dsh-mc-picker-trigger:focus-visible{outline:none;box-shadow:0 0 0 2px var(--dsw-alias-border-l3)}
-.dsh-mc-compact-trigger-label,.dsh-mc-picker-trigger-label{white-space:nowrap;text-overflow:ellipsis;overflow:hidden;min-width:0;flex:1}
-.dsh-mc-compact-trigger .dsh-mc-icon,.dsh-mc-picker-trigger .dsh-mc-icon{flex:none}
+.dsh-mc-settings-trigger{box-sizing:border-box;height:36px;min-height:36px;max-width:240px;color:var(--dsw-alias-label-primary);cursor:pointer;border:1px solid transparent;border-radius:18px;background:var(--dsw-alias-interactive-bg-hover-solid);align-items:center;gap:8px;padding:0 32px 0 14px;font-size:14px;line-height:22px;font-weight:400;display:flex;outline:none}
+.dsh-mc-settings-trigger:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
+.dsh-mc-settings-trigger:focus-visible{outline:none;box-shadow:0 0 0 2px var(--dsw-alias-border-l3)}
+.dsh-mc-settings-trigger-label{white-space:nowrap;text-overflow:ellipsis;overflow:hidden;min-width:0;flex:1}
+.dsh-mc-settings-trigger .dsh-mc-icon{flex:none}
 .dsh-mc-compact-menu,.dsh-mc-picker-menu{z-index:20;border:1px solid var(--dsw-alias-border-inverted);background:var(--dsw-specific-menu);min-width:min(240px,calc(100vw - 32px));max-width:min(420px,calc(100vw - 32px));max-height:min(360px,calc(100vh - 96px));box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-primary);border-radius:12px;padding:4px;display:flex;flex-direction:column;position:absolute;top:calc(100% + 8px);right:0;overflow:hidden;box-sizing:border-box}
 .dsh-mc-compact-option{width:100%;min-height:38px;padding:6px 8px;border:0;border-radius:10px;background:transparent;color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;text-align:left;outline:none}
 .dsh-mc-compact-option:hover,.dsh-mc-picker-option:hover{background:var(--dsw-alias-interactive-bg-hover)}
@@ -144,5 +144,5 @@ export const CAPABILITIES_CSS = `
 .dsh-mc-save-feedback-pending{color:var(--dsw-alias-state-warn-label)}
 .dsh-mc-save-feedback-error{color:var(--dsw-alias-danger-default)}
 .dsh-mc-save-icon{display:flex}
-@media (max-width:520px){.dsh-mc-setting-row{align-items:flex-start;gap:8px}.dsh-mc-setting-label-block{padding-top:4px}.dsh-mc-compact-trigger,.dsh-mc-picker-trigger{max-width:200px}.dsh-mc-chips{justify-content:flex-start}.dsh-mc-action-row{flex-wrap:wrap}.dsh-mc-action-buttons{margin-left:auto}}
+@media (max-width:520px){.dsh-mc-setting-row{align-items:flex-start;gap:8px}.dsh-mc-setting-label-block{padding-top:4px}.dsh-mc-settings-trigger{max-width:200px}.dsh-mc-chips{justify-content:flex-start}.dsh-mc-action-row{flex-wrap:wrap}.dsh-mc-action-buttons{margin-left:auto}}
 `

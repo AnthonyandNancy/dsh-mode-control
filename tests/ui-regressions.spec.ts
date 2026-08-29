@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { commitOnce, compactSelectAccessibleLabel, openingOptionIndex, Panel, popupCloseRestoresFocus, SettingRow, shouldCloseTriggerOnKey, Subsection } from '../src/client/ui.ts'
 import { emptyCompatDrafts } from '../src/client/compat-state.ts'
@@ -170,5 +171,26 @@ describe('setting row density and depth classes', () => {
     expect(classes[0]).toContain('dsh-mc-setting-row-depth-0')
     expect(classes[1]).toContain('dsh-mc-setting-row-depth-1')
     expect(classes[2]).toContain('dsh-mc-setting-row-depth-2')
+  })
+})
+
+describe('model panel semantic hierarchy map', () => {
+  const indexSource = readFileSync(new URL('../src/client/index.ts', import.meta.url), 'utf8')
+
+  it('assigns depth 1 to fields directly inside L3 subsections', () => {
+    // Provider defaults / reasoning and model basic / reasoning rows must use
+    // explicit depth 1 because subsection bodies no longer add padding.
+    expect(indexSource).toContain("label: t('inputCapability'),")
+    expect(indexSource).toContain("depth: 1")
+    expect(indexSource).toContain("label: t('reasoningCapability'),")
+  })
+
+  it('keeps advanced/anthropic compat groups at depth 1 with depth 2 fields', () => {
+    expect(indexSource).toContain("summary: t('advancedCompatibility'), variant: 'group', depth: 1, fieldDepth: 2")
+    expect(indexSource).toContain("summary: t('anthropicCompatibility'), variant: 'group', depth: 1, fieldDepth: 2")
+  })
+
+  it('keeps the compatibility overrides disclosure at section depth 0', () => {
+    expect(indexSource).toContain("summary: t('modelCompatDisclosure'), variant: 'section', depth: 0")
   })
 })

@@ -23,23 +23,26 @@ source.
 The UI detects the running mode from `api.host.describe().version` and falls
 back to the serialized `llm-pi-ai` settings schema.
 
-### dsh-tool-subagent version gate
+### dsh-tool-subagent visibility policy
 
 | `@deepseek-ai/dsh-tool-subagent` | Subagent area |
 | -------------------------------- | ------------- |
-| `< 0.1.1-rc.2`                   | Fully hidden  |
-| `>= 0.1.1-rc.2`                  | Visible       |
+| Canonical loader entry missing    | Hidden        |
+| Entry present, version unknown    | Visible + unverified warning |
+| Entry present, `< 0.1.1-rc.2`    | Visible + legacy warning |
+| Entry present, `>= 0.1.1-rc.2`   | Visible + confirmed |
 
-The gate is enforced on both sides:
+Subagent UI is entry/schema driven; the version is advisory only:
 
-- **Host**: the `dsh-mode-control.subagent` settings namespace is only
-  registered when the effective version is `>= 0.1.1-rc.2` and the
-  `tool-subagent` loader entry exists.
-- **Client**: `SubagentSettingsCard` returns `null` when
-  `runtimeCaps.subagent.visible` is false.
+- **Host**: the `dsh-mode-control.subagent` settings namespace is registered
+  whenever a canonical `tool-subagent` loader entry exists. The version is
+  recorded in the runtime snapshot for warnings.
+- **Client**: `SubagentSettingsCard` returns `null` only when
+  `runtimeCaps.subagent.visible` is false (entry missing).
 
-If the version cannot be reliably determined, the subagent area fails closed
-(hidden).
+Unverified or older versions remain visible with a lightweight warning; the
+writable controls are still decided by the detected Schemastery schema, so no
+unsupported field is ever written blindly.
 
 ## Feature overview
 
@@ -215,7 +218,9 @@ are enums sourced from the runtime schema.
 
 ## Subagent model control
 
-The subagent card appears only when the version gate passes.
+The subagent card appears whenever the canonical `tool-subagent` entry is
+detected. The version is advisory: unverified or older versions stay visible
+with a warning while the writable controls remain schema-driven.
 
 - **Legacy Static** (`agentOptions`): provider / model / maxTokens, plus
   `reasoningEffort` when the runtime `agentOptions` schema supports it.
@@ -287,7 +292,7 @@ npm run build:client
 npm test
 ```
 
-Pure logic modules are unit-tested: semver gate, subagent capability
+Pure logic modules are unit-tested: semver parsing, subagent capability
 detection, compat metadata, compat state/merge, provider/model ops, subagent
 drafts, and runtime schema introspection.
 

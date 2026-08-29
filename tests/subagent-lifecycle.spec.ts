@@ -137,8 +137,8 @@ describe('subagent registration lifecycle', () => {
   })
 })
 
-describe('subagent hidden diagnostics log', () => {
-  it('reports entry id, base url, version source and hidden reason', async () => {
+describe('subagent advisory diagnostics log', () => {
+  it('registers on entryFound even when the version is unknown and logs an advisory', async () => {
     const { ctx } = fakeContext()
     const resolveRuntime = vi.fn(async () => snapshot({
       entryFound: true,
@@ -152,14 +152,13 @@ describe('subagent hidden diagnostics log', () => {
     }))
     const register = vi.fn(async () => {})
     startSubagentSettingsRegistration(ctx, { resolveRuntime, register })
-    await vi.waitFor(() => expect(ctx.logger.warn).toHaveBeenCalled())
-    const message = String(ctx.logger.warn.mock.calls[0]?.[0] ?? '')
+    await vi.waitFor(() => expect(register).toHaveBeenCalledTimes(1))
+    const message = String(ctx.logger.info.mock.calls[0]?.[0] ?? '')
     expect(message).toContain('entryFound=true')
     expect(message).toContain('targetEntryId=delegation:tool-subagent')
     expect(message).toContain('entryBaseUrl=file:///profile/')
     expect(message).toContain('versionSource=unknown')
     expect(message).toContain('reason=version-unknown')
-    expect(register).not.toHaveBeenCalled()
   })
 })
 

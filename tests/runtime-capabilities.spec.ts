@@ -198,6 +198,7 @@ describe('model protocol resolution', () => {
 describe('runtime capabilities shape', () => {
   it('exposes subagent capabilities', () => {
     const caps = collectRuntimeCapabilities(buildSchema(), '0.1.1-rc.2', {
+      entryFound: true,
       effectiveVersion: '0.1.1-rc.2',
       toolSubagentSchemaFields: new Set(['provider']),
     })
@@ -235,7 +236,7 @@ describe('nested subagent runtime facts', () => {
 
   it('makes the subagent UI visible from a nested effectiveVersion', () => {
     const facts = subagentRuntimeFactsFromValue({
-      runtime: { effectiveVersion: '0.1.1-rc.2' },
+      runtime: { effectiveVersion: '0.1.1-rc.2', entryFound: true },
     })
     const caps = collectRuntimeCapabilities(buildSchema(), undefined, facts)
     expect(caps.subagent.visible).toBe(true)
@@ -246,6 +247,7 @@ describe('nested subagent runtime facts', () => {
     const facts = subagentRuntimeFactsFromValue({
       runtime: {
         effectiveVersion: '0.1.1-rc.2',
+        entryFound: true,
         toolSubagentSchemaFields: ['modelSelectionSettings'],
         agentOptionsSchemaFields: ['provider', 'model'],
       },
@@ -262,6 +264,7 @@ describe('nested subagent runtime facts', () => {
     const facts = subagentRuntimeFactsFromValue({
       runtime: {
         effectiveVersion: '0.1.1-rc.2',
+        entryFound: true,
         providers: [
           { name: 'acme', supportsAgentOptions: true },
           { name: 'beta', supportsAgentOptions: false },

@@ -345,12 +345,18 @@ export function SubagentSettingsCard(props: SubagentSettingsCardProps): any {
 
   const modelSelectionEnabled = controlValue?.modelSelectionSettings === true
   const modeLabel = isNative ? t('subagent.status.native') : t('subagent.status.legacy')
+  const versionWarning = capabilities.supportConfidence === 'unverified'
+    ? t('subagent.warning.unverified')
+    : capabilities.supportConfidence === 'legacy'
+      ? t('subagent.warning.legacy')
+      : undefined
   return h(Panel, {
     title: t('subagent.title'),
     className: 'dsh-mc-subagent-panel',
     caption: h('span', { className: 'dsh-mc-section-caption' }, modeLabel),
   },
     h('p', { className: 'dsh-mc-muted dsh-mc-subagent-description' }, isNative ? t('subagent.native.description') : t('subagent.legacy.description')),
+    versionWarning ? h('p', { className: 'dsh-mc-setting-warning dsh-mc-subagent-warning' }, versionWarning) : null,
     isNative
       ? h(NativeSection, {
           t, draft: nativeDraft, setDraft: setNativeDraft, setLegacyDraft, options, applyNative, modelSelectionEnabled,

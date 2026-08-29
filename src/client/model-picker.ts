@@ -1,5 +1,5 @@
 import { createElement, useEffect, useId, useRef, useState, type KeyboardEvent, type MutableRefObject } from 'react'
-import { CheckIcon, ChevronDownIcon, TextInput, openingOptionIndex, popupCloseRestoresFocus, shouldCloseTriggerOnKey } from './ui.ts'
+import { CheckIcon, ChevronDownIcon, SettingsSelectTrigger, TextInput, openingOptionIndex, popupCloseRestoresFocus, shouldCloseTriggerOnKey } from './ui.ts'
 
 export interface ModelRouteOption {
   provider: string
@@ -411,16 +411,15 @@ export function ModelRoutePicker(props: ModelRoutePickerProps): any {
     setOpen(true)
   }
   return h('div', { ref: popup.rootRef, className: 'dsh-mc-picker-root', onKeyDown },
-    h('button', {
-      ref: triggerRef,
-      type: 'button',
-      className: 'dsh-mc-picker-trigger dsh-mc-settings-control',
-      'aria-haspopup': 'listbox',
-      'aria-expanded': open,
-      'aria-controls': open ? `${id}-listbox` : undefined,
-      'aria-label': `${ariaLabel}: ${triggerLabel}`,
-      title: display,
+    h(SettingsSelectTrigger, {
+      triggerRef,
+      label: display,
+      open,
       disabled,
+      ariaLabel: `${ariaLabel}: ${triggerLabel}`,
+      title: display,
+      'aria-controls': open ? `${id}-listbox` : undefined,
+      className: 'dsh-mc-settings-control',
       onKeyDown: (event: KeyboardEvent) => {
         if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'Enter' || event.key === ' ') {
           event.preventDefault()
@@ -429,7 +428,7 @@ export function ModelRoutePicker(props: ModelRoutePickerProps): any {
         }
       },
       onClick: () => open ? close('escape') : openPicker(0, false),
-    }, h('span', { className: 'dsh-mc-picker-trigger-label' }, display), h(ChevronDownIcon, { open })),
+    }),
     open ? h('div', { id: `${id}-menu`, className: `dsh-mc-picker-menu${popup.positionClass}`, style: { maxHeight: `${popup.placement.maxHeight}px` } },
       h(TextInput, { inputRef, value: search, onChange: setSearch, placeholder: searchPlaceholder, ariaLabel: searchAriaLabel, className: 'dsh-mc-picker-search' }),
       h('div', { id: `${id}-listbox`, className: 'dsh-mc-picker-listbox', role: 'listbox', 'aria-label': ariaLabel },
@@ -513,15 +512,14 @@ export function MultiModelPicker(props: MultiModelPickerProps): any {
     setOpen(true)
   }
   return h('div', { ref: popup.rootRef, className: 'dsh-mc-picker-root', onKeyDown },
-    h('button', {
-      ref: triggerRef,
-      type: 'button',
-      className: 'dsh-mc-picker-trigger dsh-mc-settings-control',
-      'aria-haspopup': 'listbox',
-      'aria-expanded': open,
-      'aria-controls': open ? `${id}-listbox` : undefined,
-      'aria-label': `${ariaLabel}: ${triggerLabel}`,
+    h(SettingsSelectTrigger, {
+      triggerRef,
+      label: summary ?? `${value.length}`,
+      open,
       disabled,
+      ariaLabel: `${ariaLabel}: ${triggerLabel}`,
+      'aria-controls': open ? `${id}-listbox` : undefined,
+      className: 'dsh-mc-settings-control',
       onKeyDown: (event: KeyboardEvent) => {
         if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'Enter' || event.key === ' ') {
           event.preventDefault()
@@ -530,7 +528,7 @@ export function MultiModelPicker(props: MultiModelPickerProps): any {
         }
       },
       onClick: () => open ? close('escape') : openPicker(0, false),
-    }, h('span', { className: 'dsh-mc-picker-trigger-label' }, summary ?? `${value.length}`), h(ChevronDownIcon, { open })),
+    }),
     open ? h('div', { id: `${id}-menu`, className: `dsh-mc-picker-menu${popup.positionClass}`, style: { maxHeight: `${popup.placement.maxHeight}px` } },
       h(TextInput, { inputRef, value: search, onChange: setSearch, placeholder: searchPlaceholder, ariaLabel: searchAriaLabel, className: 'dsh-mc-picker-search' }),
       h('div', { id: `${id}-listbox`, className: 'dsh-mc-picker-listbox', role: 'listbox', 'aria-label': ariaLabel, 'aria-multiselectable': true },

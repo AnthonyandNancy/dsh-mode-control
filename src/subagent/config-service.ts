@@ -15,7 +15,8 @@
  *
  * Registration is lifecycle-aware: the plugin starts by trying immediately,
  * then listens for the tool-subagent loader entry appearing later. It is
- * idempotent and fail-closed for unknown versions.
+ * idempotent; the canonical entry's presence is the only registration gate.
+ * Version is advisory only (recorded in the runtime snapshot for the UI).
  *
  * Lifecycle note: `loader/entry-init` fires from the `Entry` constructor
  * before `EntryGroup.create()` calls `entry.update(options, true, true)`, so
@@ -536,16 +537,16 @@ function settingsRegistrations(ctx: HostContext): Set<object> {
 }
 
 /**
- * Register the auditable subagent settings namespace when the version gate
- * passes. Below `0.1.1-rc.2` no namespace is created, so the client has
- * nothing to render — the subagent area is completely hidden.
+ * Register the auditable subagent settings namespace whenever a canonical
+ * tool-subagent entry exists. The version is recorded for advisory warnings
+ * but never hides the namespace.
  */
 export async function registerSubagentSettings(
   ctx: HostContext,
   facts?: SubagentRuntimeSnapshot,
 ): Promise<void> {
   const snapshot = facts ?? await resolveSubagentRuntime(ctx)
-  if (!isSubagentVisible(snapshot.effectiveVersion) || !snapshot.entryFound) return
+  if (!snapshot.entryFound) return
 
   const match = selectCanonicalToolSubagentEntry(ctx)
   const entryConfig = match ? (match.entry.options?.config ?? {}) : {}
@@ -653,8 +654,8 @@ export function startSubagentSettingsRegistration(
     attempting = true
     try {
       const facts = await resolveRuntime(ctx)
-      if (!isSubagentVisible(facts.effectiveVersion) || !facts.entryFound) {
-        warn(`subagent hidden: ${describeFacts(facts)}`)
+      if (!facts.entryFound) {
+        warn(`subagent not registered (entry missing): ${describeFacts(facts)}`)
         return
       }
       await register(ctx, facts)

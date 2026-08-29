@@ -306,13 +306,24 @@ function inputFor(input: string[]): unknown {
 }
 
 /**
+ * Canonical Anthropic Messages wire spelling for an authoring level.
+ *
+ * `max` stays `max` on the wire; `minimal` collapses to `low` because pi-ai
+ * has no `minimal` output effort. This is the single source for the default
+ * Anthropic mapping.
+ */
+export function defaultAnthropicReasoningWire(level: PiAiReasoningLevel): string | null {
+  return ANTHROPIC_REASONING_EFFORT_DEFAULTS[level]
+}
+
+/**
  * Default wire spelling for a canonical level.
  *
  * `anthropic` uses the Anthropic Messages default mapping (`minimal → low`).
  * Generic mapping defaults to canonical identity.
  */
 export function defaultReasoningWire(level: PiAiReasoningLevel, anthropic: boolean): string | null {
-  if (anthropic) return ANTHROPIC_REASONING_EFFORT_DEFAULTS[level]
+  if (anthropic) return defaultAnthropicReasoningWire(level)
   return level === 'off' ? null : level
 }
 

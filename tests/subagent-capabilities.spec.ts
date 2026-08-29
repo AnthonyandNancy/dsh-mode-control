@@ -6,32 +6,42 @@ import {
 
 function input(overrides: Partial<SubagentCapabilityInput> = {}): SubagentCapabilityInput {
   return {
+    entryFound: true,
     effectiveVersion: '0.1.1-rc.2',
     ...overrides,
   }
 }
 
 describe('detectSubagentCapabilities', () => {
-  it('hides everything below 0.1.1-rc.2', () => {
-    for (const version of ['0.1.0-rc.6', '0.1.0-rc.8', '0.1.1-rc.1']) {
-      const caps = detectSubagentCapabilities(input({ effectiveVersion: version }))
-      expect(caps.visible).toBe(false)
-      expect(caps.mode).toBe('unsupported')
-      expect(caps.supportsAgentOptions).toBe(false)
-      expect(caps.supportsReasoningEffort).toBe(false)
-      expect(caps.supportsNativeSelection).toBe(false)
-    }
-  })
-
-  it('fails closed when the subagent version is missing', () => {
-    const caps = detectSubagentCapabilities(input({ effectiveVersion: undefined }))
+  it('hides only when the canonical entry is missing', () => {
+    const caps = detectSubagentCapabilities(input({ entryFound: false }))
     expect(caps.visible).toBe(false)
     expect(caps.mode).toBe('unsupported')
+    expect(caps.supportsAgentOptions).toBe(false)
+    expect(caps.supportsReasoningEffort).toBe(false)
+    expect(caps.supportsNativeSelection).toBe(false)
+  })
+
+  it('shows the panel when the entry exists even if the version is missing', () => {
+    const caps = detectSubagentCapabilities(input({ effectiveVersion: undefined }))
+    expect(caps.visible).toBe(true)
+    expect(caps.supportConfidence).toBe('unverified')
+    expect(caps.mode).toBe('legacy-static')
+  })
+
+  it('shows older versions with a legacy advisory instead of hiding', () => {
+    for (const version of ['0.1.0-rc.6', '0.1.0-rc.8', '0.1.1-rc.1']) {
+      const caps = detectSubagentCapabilities(input({ effectiveVersion: version }))
+      expect(caps.visible).toBe(true)
+      expect(caps.supportConfidence).toBe('legacy')
+      expect(caps.mode).toBe('legacy-static')
+    }
   })
 
   it('enters legacy-static for rc.2 without native selection', () => {
     const caps = detectSubagentCapabilities(input())
     expect(caps.visible).toBe(true)
+    expect(caps.supportConfidence).toBe('confirmed')
     expect(caps.mode).toBe('legacy-static')
     expect(caps.supportsAgentOptions).toBe(true)
     expect(caps.supportsReasoningEffort).toBe(false)
