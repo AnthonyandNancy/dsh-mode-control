@@ -46,6 +46,42 @@ export function SettingRow(props: SettingRowProps): any {
   )
 }
 
+export interface PanelProps {
+  title: string
+  action?: any
+  caption?: any
+  children?: any
+  className?: string
+}
+
+/** Lightweight top-level surface: one Panel per main module. */
+export function Panel(props: PanelProps): any {
+  const h = createElement
+  return h('section', { className: `dsh-mc-panel${props.className ? ` ${props.className}` : ''}` },
+    h('div', { className: 'dsh-mc-panel-heading' },
+      h('h3', { className: 'dsh-mc-panel-title' }, props.title),
+      props.action ? h('div', { className: 'dsh-mc-panel-action' }, props.action) : null,
+    ),
+    props.caption ? h('div', { className: 'dsh-mc-panel-caption' }, props.caption) : null,
+    h('div', { className: 'dsh-mc-panel-body' }, props.children),
+  )
+}
+
+export interface SubsectionProps {
+  title: string
+  children?: any
+  className?: string
+}
+
+/** Lightweight grouping inside a Panel; no extra border/card. */
+export function Subsection(props: SubsectionProps): any {
+  const h = createElement
+  return h('div', { className: `dsh-mc-subsection${props.className ? ` ${props.className}` : ''}` },
+    h('h4', { className: 'dsh-mc-subsection-title' }, props.title),
+    h('div', { className: 'dsh-mc-subsection-body' }, props.children),
+  )
+}
+
 export interface CompactSelectOption {
   value: string
   label: string

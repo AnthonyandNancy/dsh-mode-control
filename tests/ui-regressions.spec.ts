@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { commitOnce, compactSelectAccessibleLabel, openingOptionIndex, popupCloseRestoresFocus, shouldCloseTriggerOnKey } from '../src/client/ui.ts'
+import { commitOnce, compactSelectAccessibleLabel, openingOptionIndex, Panel, popupCloseRestoresFocus, shouldCloseTriggerOnKey, Subsection } from '../src/client/ui.ts'
 import { emptyCompatDrafts } from '../src/client/compat-state.ts'
 import { collectOpsForAllProviders } from '../src/client/save-helpers.ts'
 import { collectOpsForProvider, type ModelDraft, type ProviderDraft } from '../src/client/ops.ts'
@@ -121,5 +121,12 @@ describe('UI draft regression helpers', () => {
       { op: 'set', path: ['providers', 'alpha', 'modelOverrides', 'alpha-model', 'input'], value: ['image'] },
       { op: 'set', path: ['providers', 'beta', 'modelOverrides', 'beta-model', 'input'], value: ['image'] },
     ]))
+  })
+})
+
+describe('Panel / Subsection hierarchy components', () => {
+  it('exports lightweight panel and subsection renderers', () => {
+    expect(typeof Panel).toBe('function')
+    expect(typeof Subsection).toBe('function')
   })
 })

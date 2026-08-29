@@ -5,6 +5,7 @@ import {
   collectOpsForModels,
   collectOpsForProvider,
   declaredModelIds,
+  editableModelIds,
   detectDshMode,
   isAnthropicModel,
   isAnthropicProvider,
@@ -213,6 +214,37 @@ describe('model route provenance', () => {
     const cfg = { models: [{ id: 'shared' }] }
     const groups = [{ id: 'acme', models: [{ id: 'shared' }, { id: 'catalog' }] }]
     expect(catalogModelIds('acme', cfg, groups)).toEqual(['shared', 'catalog'])
+  })
+})
+
+describe('editable model ids', () => {
+  it('includes catalog-only models when the route serves the installed catalog', () => {
+    const providers = [{
+      id: 'location',
+      models: [{ id: 'DeepSeek-V4-Flash-0731' }, { id: 'catalog-b' }],
+    }]
+    expect(editableModelIds('location', {}, providers)).toEqual([
+      'DeepSeek-V4-Flash-0731',
+      'catalog-b',
+    ])
+  })
+
+  it('includes existing modelOverrides keys on a catalog route', () => {
+    const cfg = { modelOverrides: { 'override-only': {} } }
+    const catalog = [{ id: 'location', models: [{ id: 'catalog-a' }] }]
+    expect(editableModelIds('location', cfg, catalog)).toEqual(['override-only', 'catalog-a'])
+  })
+
+  it('does not mix the replaced catalog back into models[] routes', () => {
+    const cfg = { models: [{ id: 'custom-a' }] }
+    const catalog = [{ id: 'location', models: [{ id: 'catalog-a' }, { id: 'catalog-b' }] }]
+    expect(editableModelIds('location', cfg, catalog)).toEqual(['custom-a'])
+  })
+
+  it('keeps declared override targets beside a non-empty models[] list', () => {
+    const cfg = { models: [{ id: 'custom-a' }], modelOverrides: { extra: {} } }
+    const catalog = [{ id: 'location', models: [{ id: 'catalog-a' }] }]
+    expect(editableModelIds('location', cfg, catalog)).toEqual(['custom-a', 'extra'])
   })
 })
 

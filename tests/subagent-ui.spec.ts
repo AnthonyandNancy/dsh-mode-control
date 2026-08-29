@@ -6,13 +6,16 @@ vi.mock('../src/client/ui.ts', () => ({
   CompactSelect: () => null,
   DisclosureRow: () => null,
   InlineNumberEditor: () => null,
+  Panel: () => null,
   SettingRow: () => null,
   TextInput: () => null,
 }))
 import {
   applySuccessOutcome,
+  buildSubagentReasoningOptions,
   buildSubagentRouteOptions,
   canApplyLegacyRoute,
+  isInvalidExplicitReasoningEffort,
   isLegacyProviderBlocked,
   isNativeNamespaceWritable,
   providerAgentOptionsSupported,
@@ -118,5 +121,34 @@ describe('subagent UI regression helpers', () => {
       { provider: 'catalog-provider', model: 'catalog-model' },
       { provider: 'removed-provider', model: 'persisted-model' },
     ])
+  })
+})
+
+describe('subagent explicit reasoning options', () => {
+  it('offers only runtime exact efforts plus an invalid persisted effort', () => {
+    const options = buildSubagentReasoningOptions(['low', 'high'], 'max', '(currently unsupported)')
+    expect(options).toEqual([
+      { value: 'low', label: 'low' },
+      { value: 'high', label: 'high' },
+      { value: 'max', label: 'max (currently unsupported)', unsupported: true },
+    ])
+  })
+
+  it('does not offer local authoring efforts that runtime has not resolved', () => {
+    const options = buildSubagentReasoningOptions(['low'], '')
+    expect(options).toEqual([
+      { value: 'low', label: 'low' },
+    ])
+  })
+
+  it('detects an explicit effort missing from runtime', () => {
+    expect(isInvalidExplicitReasoningEffort('max', ['low', 'high'])).toBe(true)
+    expect(isInvalidExplicitReasoningEffort('low', ['low', 'high'])).toBe(false)
+    expect(isInvalidExplicitReasoningEffort('', ['low'])).toBe(false)
+  })
+
+  it('blocks legacy apply while an explicit reasoning effort is unsupported', () => {
+    expect(canApplyLegacyRoute(true, true, true, true, true)).toBe(false)
+    expect(canApplyLegacyRoute(true, true, true, true, false)).toBe(true)
   })
 })

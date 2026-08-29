@@ -170,6 +170,39 @@ describe('modelOverrides extended ops', () => {
   })
 })
 
+describe('catalog-only model first edit', () => {
+  it('writes a precise modelOverrides path without touching other fields', () => {
+    const cfg = {
+      defaultInput: ['text'],
+      reasoning: 'max',
+    }
+    const draft = {
+      input: [],
+      reasoningMode: 'custom' as const,
+      efforts: ['low', 'max'],
+      wire: { low: 'low', max: 'max' },
+    }
+    const ops = collectOpsForModels('location', cfg, { 'DeepSeek-V4-Flash-0731': draft })
+    expect(ops).toEqual([
+      { op: 'set', path: ['providers', 'location', 'modelOverrides', 'DeepSeek-V4-Flash-0731', 'reasoningEfforts'], value: { low: 'low', max: 'max' } },
+    ])
+    expect(ops.some(op => op.path.join('.').includes('providers.location.modelOverrides.DeepSeek-V4-Flash-0731') && op.path.length === 5)).toBe(true)
+  })
+
+  it('can reasonEfforts=false for a catalog-only model through the override path', () => {
+    const draft = {
+      input: [],
+      reasoningMode: 'unsupported' as const,
+      efforts: [],
+      wire: {},
+    }
+    const ops = collectOpsForModels('location', {}, { m: draft })
+    expect(ops).toEqual([
+      { op: 'set', path: ['providers', 'location', 'modelOverrides', 'm', 'reasoningEfforts'], value: false },
+    ])
+  })
+})
+
 describe('models[] extended ops', () => {
   it('does not set unsupported model compat fields but still allows clearing them', () => {
     const providerConfig = { modelOverrides: { foo: { compat: { supportsStore: true } } } }

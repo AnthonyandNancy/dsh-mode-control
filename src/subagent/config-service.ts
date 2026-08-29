@@ -12,9 +12,15 @@
  * which merges options, restarts the entry as needed, and persists through the
  * parent tree. The service never rewrites `node_modules`, never string-edits
  * `cordis.yml`, and never opens arbitrary files.
+ *
+ * Registration is lifecycle-aware: the plugin starts by trying immediately,
+ * then listens for the tool-subagent loader entry appearing later. It is
+ * idempotent and fail-closed for unknown versions.
  */
 
+import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { dirname, join } from 'node:path'
 import z from 'schemastery'
 import { SUBAGENT_NAMESPACE, TOOL_ENTRY_ID } from './constants.ts'
 import { isSubagentVisible } from './version.ts'
@@ -25,6 +31,18 @@ type HostContext = any
 
 export { SUBAGENT_NAMESPACE, TOOL_ENTRY_ID }
 
+export type SubagentVersionSource =
+  | 'loader'
+  | 'module'
+  | 'package-export'
+  | 'module-path-package'
+  | 'unknown'
+
+export type SubagentHiddenReason =
+  | 'version-too-old'
+  | 'version-unknown'
+  | 'entry-missing'
+
 export interface SubagentProviderSnapshot {
   name: string
   supportsAgentOptions: boolean
@@ -33,6 +51,10 @@ export interface SubagentProviderSnapshot {
 export interface SubagentRuntimeSnapshot {
   /** Effective `@deepseek-ai/dsh-tool-subagent` version when reliably known. */
   effectiveVersion?: string
+  /** Which resolver produced `effectiveVersion`, for diagnostics. */
+  versionSource?: SubagentVersionSource
+  /** Why the subagent UI is hidden, when it is hidden. */
+  hiddenReason?: SubagentHiddenReason
   /** Whether a tool-subagent loader entry exists (even if disabled). */
   entryFound: boolean
   /** Top-level keys of the loaded tool-subagent Config schema. */
@@ -101,14 +123,97 @@ function schemaShapeKeys(schema: any): string[] {
   return Object.keys(shape)
 }
 
-function resolvePackageVersion(): string | undefined {
-  try {
-    const require = createRequire(import.meta.url)
-    const pkg = require('@deepseek-ai/dsh-tool-subagent/package.json') as { version?: string }
-    return typeof pkg.version === 'string' ? pkg.version : undefined
-  } catch {
-    return undefined
+const SUBAGENT_PACKAGE = '@deepseek-ai/dsh-tool-subagent'
+
+export interface SubagentVersionResult {
+  version?: string
+  source?: SubagentVersionSource
+}
+
+/**
+ * Read `package.json` starting from a resolved module path and walking upward.
+ *
+ * A package.json is accepted only when its `name` matches the tool-subagent
+ * package; otherwise the walk continues toward the filesystem root.
+ */
+export function packageVersionFromResolvedPath(
+  modulePath: string,
+  expectedName = SUBAGENT_PACKAGE,
+): SubagentVersionResult {
+  let dir = dirname(modulePath)
+  for (;;) {
+    const pkgPath = join(dir, 'package.json')
+    if (existsSync(pkgPath)) {
+      try {
+        const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as { name?: unknown; version?: unknown }
+        if (pkg?.name === expectedName && typeof pkg?.version === 'string' && pkg.version !== '') {
+          return { version: pkg.version, source: 'module-path-package' }
+        }
+      } catch {
+        // unreadable/malformed package.json in this directory: keep walking up
+      }
+    }
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
   }
+  return { source: 'unknown' }
+}
+
+/**
+ * Version resolution through the host's `require` seam.
+ *
+ * 1. `require('@deepseek-ai/dsh-tool-subagent/package.json')`
+ * 2. `require.resolve('@deepseek-ai/dsh-tool-subagent')` → walk up to a
+ *    `package.json` whose `name` matches the package.
+ */
+export function resolveSubagentVersionFromRequire(
+  requireFn: (id: string) => unknown,
+  resolveFn?: (id: string) => string,
+): SubagentVersionResult {
+  try {
+    const pkg = requireFn(`${SUBAGENT_PACKAGE}/package.json`) as { name?: unknown; version?: unknown } | undefined
+    if (typeof pkg?.version === 'string' && pkg.version !== '') {
+      if (typeof pkg.name !== 'string' || pkg.name === SUBAGENT_PACKAGE) {
+        return { version: pkg.version, source: 'package-export' }
+      }
+    }
+  } catch {
+    // fall through to resolve-based lookup
+  }
+  if (!resolveFn) return { source: 'unknown' }
+  try {
+    const resolved = resolveFn(SUBAGENT_PACKAGE)
+    return packageVersionFromResolvedPath(resolved)
+  } catch {
+    return { source: 'unknown' }
+  }
+}
+
+/**
+ * Resolve the subagent package version from multiple sources, in priority
+ * order: loader entry, loaded module metadata, package export, module path.
+ */
+export function resolveSubagentVersion(
+  _ctx: HostContext,
+  foundEntry?: { entry: any } | undefined,
+  loadedModule?: any,
+): SubagentVersionResult {
+  const entryVersion = foundEntry?.entry?.options?.version ?? foundEntry?.entry?.version
+  if (typeof entryVersion === 'string' && entryVersion !== '') {
+    return { version: entryVersion, source: 'loader' }
+  }
+  if (loadedModule && typeof loadedModule.version === 'string' && loadedModule.version !== '') {
+    return { version: loadedModule.version, source: 'module' }
+  }
+  if (loadedModule?.default && typeof loadedModule.default.version === 'string' && loadedModule.default.version !== '') {
+    return { version: loadedModule.default.version, source: 'module' }
+  }
+  const require = createRequire(import.meta.url)
+  return resolveSubagentVersionFromRequire(
+    (id: string) => require(id),
+    (id: string) => require.resolve(id),
+  )
 }
 
 async function resolveToolModule(ctx: HostContext): Promise<any | undefined> {
@@ -136,6 +241,7 @@ export async function resolveSubagentRuntime(ctx: HostContext): Promise<Subagent
   const mod = await resolveToolModule(ctx)
   const configSchema = mod?.Config
   const agentOptionsSchema = configSchema?.shape?.agentOptions
+  const version = resolveSubagentVersion(ctx, found, mod)
   const providerCapabilities: SubagentProviderSnapshot[] = []
   try {
     const subagents = (ctx as any).get?.('subagents')
@@ -150,8 +256,18 @@ export async function resolveSubagentRuntime(ctx: HostContext): Promise<Subagent
   } catch {
     // subagents seam absent — leave the list empty
   }
+  const visible = isSubagentVisible(version.version)
+  const hiddenReason: SubagentHiddenReason | undefined = !found
+    ? 'entry-missing'
+    : version.version === undefined
+      ? 'version-unknown'
+      : !visible
+        ? 'version-too-old'
+        : undefined
   return {
-    effectiveVersion: resolvePackageVersion(),
+    effectiveVersion: version.version,
+    versionSource: version.source,
+    hiddenReason,
     entryFound: found !== undefined,
     toolSubagentSchemaFields: schemaShapeKeys(configSchema),
     agentOptionsSchemaFields: schemaShapeKeys(agentOptionsSchema),
@@ -212,14 +328,17 @@ export async function applySubagentControl(
  * passes. Below `0.1.1-rc.2` no namespace is created, so the client has
  * nothing to render — the subagent area is completely hidden.
  */
-export async function registerSubagentSettings(ctx: HostContext): Promise<void> {
-  const facts = await resolveSubagentRuntime(ctx)
-  if (!isSubagentVisible(facts.effectiveVersion) || !facts.entryFound) return
+export async function registerSubagentSettings(
+  ctx: HostContext,
+  facts?: SubagentRuntimeSnapshot,
+): Promise<void> {
+  const snapshot = facts ?? await resolveSubagentRuntime(ctx)
+  if (!isSubagentVisible(snapshot.effectiveVersion) || !snapshot.entryFound) return
 
   const found = entryOf(ctx)
   const entryConfig = found ? (found.entry.options?.config ?? {}) : {}
   const base = {
-    runtime: facts,
+    runtime: snapshot,
     agentOptions: cleanAgentOptions(entryConfig.agentOptions),
     modelSelectionSettings: typeof entryConfig.modelSelectionSettings === 'boolean'
       ? entryConfig.modelSelectionSettings
@@ -229,7 +348,7 @@ export async function registerSubagentSettings(ctx: HostContext): Promise<void> 
   let source: () => unknown = () => base
   let lastApplied = JSON.stringify(base)
 
-  ctx.inject(['settings'], (sctx: any) => {
+  await ctx.inject(['settings'], (sctx: any) => {
     const scope = sctx.settings.register(SUBAGENT_NAMESPACE, SubagentControlSchema, {
       base,
       validate: (value: unknown) => {
@@ -255,4 +374,81 @@ export async function registerSubagentSettings(ctx: HostContext): Promise<void> 
       })
     })
   })
+}
+
+export interface SubagentRegistrationService {
+  /** Inject a runtime resolver for tests; defaults to `resolveSubagentRuntime`. */
+  resolveRuntime?: (ctx: HostContext) => Promise<SubagentRuntimeSnapshot>
+  /** Inject a registration function for tests; defaults to `registerSubagentSettings`. */
+  register?: (ctx: HostContext, facts?: SubagentRuntimeSnapshot) => Promise<void>
+}
+
+/**
+ * Start lifecycle-aware subagent registration.
+ *
+ * - Tries immediately when the tool-subagent entry already exists.
+ * - Listens for `loader/entry-init` so a later-appearing tool entry registers
+ *   the namespace too.
+ * - Idempotent: registration runs at most once per host context lifetime.
+ * - No polling.
+ */
+export function startSubagentSettingsRegistration(
+  ctx: HostContext,
+  service: SubagentRegistrationService = {},
+): void {
+  let registered = false
+  let attempting = false
+  let retryQueued = false
+  const resolveRuntime = service.resolveRuntime ?? resolveSubagentRuntime
+  const register = service.register ?? registerSubagentSettings
+  const log = (message: string): void => {
+    (ctx as any).logger?.warn?.(`[dsh-mode-control] ${message}`)
+  }
+
+  const tryRegister = async (): Promise<void> => {
+    if (registered || attempting) return
+    attempting = true
+    try {
+      const facts = await resolveRuntime(ctx)
+      if (!isSubagentVisible(facts.effectiveVersion) || !facts.entryFound) {
+        log(`subagent hidden: entryFound=${String(facts.entryFound)} version=${String(facts.effectiveVersion)} source=${String(facts.versionSource)}`)
+        return
+      }
+      registered = true
+      await register(ctx, facts)
+    } catch (error) {
+      registered = false
+      log(`subagent registration failed: ${String(error)}`)
+    } finally {
+      attempting = false
+      if (retryQueued && !registered) {
+        retryQueued = false
+        void tryRegister()
+      } else {
+        retryQueued = false
+      }
+    }
+  }
+
+  void tryRegister()
+
+  const isToolEntry = (entry: any): boolean => {
+    const id = entry?.id ?? ''
+    const name = entry?.options?.name ?? ''
+    return id === TOOL_ENTRY_ID || id.endsWith(`:${TOOL_ENTRY_ID}`) || name === '@deepseek-ai/dsh-tool-subagent'
+  }
+
+  const disposeListener = ctx.on?.('loader/entry-init', (entry: any) => {
+    if (registered || !isToolEntry(entry)) return
+    if (attempting) {
+      retryQueued = true
+      return
+    }
+    void tryRegister()
+  })
+  if (disposeListener) {
+    ctx.effect?.(() => {
+      disposeListener()
+    }, '@deepseek-ai/dsh-llm-pi-ai-capabilities: subagent registration lifecycle')
+  }
 }

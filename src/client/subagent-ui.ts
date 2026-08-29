@@ -11,7 +11,8 @@ import {
   type NativeSubagentDraft,
 } from './subagent-state.ts'
 import { buildModelRouteOptions, ModelRoutePicker, MultiModelPicker, type ModelRouteOption } from './model-picker.ts'
-import { CompactSelect, DisclosureRow, InlineNumberEditor, SettingRow } from './ui.ts'
+import { parseUnsupportedReasoningEffortError } from './reasoning-capabilities.ts'
+import { CompactSelect, DisclosureRow, InlineNumberEditor, Panel, SettingRow } from './ui.ts'
 
 export interface SubagentSettingsCardProps {
   t: (key: string) => string
@@ -22,7 +23,7 @@ export interface SubagentSettingsCardProps {
   controlWritable: boolean
   nativeNamespace?: { value?: unknown; revision?: number; writable?: boolean }
   providerNames: string[]
-  modelsByProvider: Record<string, string[]>
+  editableModelsByProvider: Record<string, string[]>
   reasoningEffortsByModel: Record<string, string[]>
   providerSupportsAgentOptions: Record<string, boolean>
   onApplied?: () => void
@@ -30,6 +31,46 @@ export interface SubagentSettingsCardProps {
 
 function modelKey(provider: string, model: string): string {
   return `${provider}\u0000${model}`
+}
+
+export interface SubagentReasoningOption {
+  value: string
+  label: string
+  unsupported?: boolean
+}
+
+/**
+ * Build the explicit reasoning options for one fixed subagent route.
+ *
+ * Only DSH runtime exact-model efforts are offered. A persisted effort that
+ * the current runtime does not support is still shown (marked unsupported) so
+ * users can see and clear it instead of silently losing it.
+ */
+export function buildSubagentReasoningOptions(
+  runtimeEfforts: string[],
+  currentEffort: string,
+  unsupportedSuffix = '⚠',
+): SubagentReasoningOption[] {
+  const options: SubagentReasoningOption[] = []
+  const seen = new Set<string>()
+  for (const effort of runtimeEfforts) {
+    if (seen.has(effort)) continue
+    seen.add(effort)
+    options.push({ value: effort, label: effort })
+  }
+  const current = currentEffort.trim()
+  if (current !== '' && !seen.has(current)) {
+    options.push({ value: current, label: `${current} ${unsupportedSuffix}`.trim(), unsupported: true })
+  }
+  return options
+}
+
+export function isInvalidExplicitReasoningEffort(
+  currentEffort: string,
+  runtimeEfforts: string[],
+): boolean {
+  const current = currentEffort.trim()
+  return current !== '' && !runtimeEfforts.includes(current)
 }
 
 export function isNativeNamespaceWritable(nativeNamespace?: { writable?: boolean }): boolean {
@@ -102,8 +143,10 @@ export function canApplyLegacyRoute(
   supportsAgentOptions: boolean,
   providerSupportsAgentOptions: boolean | undefined,
   fixedMode = true,
+  invalidExplicitReasoning = false,
 ): boolean {
   if (!controlWritable || !supportsAgentOptions) return false
+  if (invalidExplicitReasoning) return false
   if (providerSupportsAgentOptions === false) return false
   if (fixedMode && providerSupportsAgentOptions === undefined) return false
   return true
@@ -152,7 +195,7 @@ function draftFromNative(value: unknown): NativeSubagentDraft {
 }
 
 export function SubagentSettingsCard(props: SubagentSettingsCardProps): any {
-  const { t, api, capabilities, controlValue, controlRevision, controlWritable, nativeNamespace, providerNames, modelsByProvider, reasoningEffortsByModel, providerSupportsAgentOptions } = props
+  const { t, api, capabilities, controlValue, controlRevision, controlWritable, nativeNamespace, providerNames, editableModelsByProvider, reasoningEffortsByModel, providerSupportsAgentOptions } = props
   const h = createElement
   const [legacyDraft, setLegacyDraftState] = useState<LegacySubagentDraft>(() => legacyDraftFromAgentOptions(controlValue?.agentOptions))
   const [nativeDraft, setNativeDraftState] = useState<NativeSubagentDraft>(() => draftFromNative(nativeNamespace?.value))
@@ -184,29 +227,36 @@ export function SubagentSettingsCard(props: SubagentSettingsCardProps): any {
 
   const isNative = capabilities.mode === 'native-selection'
   const nativeWritable = isNativeNamespaceWritable(nativeNamespace)
-  const options = routeOptions(providerNames, modelsByProvider, legacyDraft.mode === 'fixed' ? { provider: legacyDraft.provider, model: legacyDraft.model } : undefined, isNative ? nativeDraft.allowedModels : undefined)
+  const options = routeOptions(providerNames, editableModelsByProvider, legacyDraft.mode === 'fixed' ? { provider: legacyDraft.provider, model: legacyDraft.model } : undefined, isNative ? nativeDraft.allowedModels : undefined)
   const selectedProviderUnsupported = isLegacyProviderBlocked(legacyDraft.provider, providerSupportsAgentOptions)
   const agentOptionsUnsupported = !capabilities.supportsAgentOptions
+  const runtimeEfforts = reasoningEffortsByModel[modelKey(legacyDraft.provider, legacyDraft.model)] ?? []
+  const invalidExplicitReasoning = capabilities.supportsReasoningEffort
+    && legacyDraft.mode === 'fixed'
+    && isInvalidExplicitReasoningEffort(legacyDraft.reasoningEffort, runtimeEfforts)
   const legacyApplyBlocked = !canApplyLegacyRoute(
     controlWritable,
     capabilities.supportsAgentOptions,
     providerAgentOptionsSupported(providerSupportsAgentOptions, legacyDraft.provider),
     legacyDraft.mode === 'fixed',
+    invalidExplicitReasoning,
   )
   const reasoningOptions = [
     { value: '', label: t('subagent.reasoning.auto') },
-    ...(reasoningEffortsByModel[modelKey(legacyDraft.provider, legacyDraft.model)] ?? []).map(effort => ({ value: effort, label: effort })),
+    ...buildSubagentReasoningOptions(runtimeEfforts, legacyDraft.reasoningEffort, t('subagent.reasoning.unsupportedSuffix')),
   ]
 
   const applyLegacy = async (): Promise<void> => {
     setError('')
     setStatus('')
     if (legacyApplyBlocked) {
-      setError(agentOptionsUnsupported
-        ? t('subagent.agentOptionsUnsupported')
-        : selectedProviderUnsupported
-          ? t('subagent.backendManagesModel')
-          : t('subagent.readonly'))
+      setError(invalidExplicitReasoning
+        ? t('subagent.reasoning.unsupportedBlocked')
+        : agentOptionsUnsupported
+          ? t('subagent.agentOptionsUnsupported')
+          : selectedProviderUnsupported
+            ? t('subagent.backendManagesModel')
+            : t('subagent.readonly'))
       return
     }
     try {
@@ -228,7 +278,13 @@ export function SubagentSettingsCard(props: SubagentSettingsCardProps): any {
       setLegacyRevision(outcome.revision)
       setStatus(t('subagent.savedNewSessions'))
        props.onApplied?.()
-    } catch (cause: any) { setError(String(cause?.message ?? cause)) }
+    } catch (cause: any) {
+      const message = String(cause?.message ?? cause)
+      const parsed = parseUnsupportedReasoningEffortError(message)
+      setError(parsed
+        ? `${t('reasoningEffortUnsupportedTitle')}: ${parsed.effort ?? ''}`
+        : message)
+    }
   }
 
   const applyNative = async (): Promise<void> => {
@@ -289,29 +345,31 @@ export function SubagentSettingsCard(props: SubagentSettingsCardProps): any {
 
   const modelSelectionEnabled = controlValue?.modelSelectionSettings === true
   const modeLabel = isNative ? t('subagent.status.native') : t('subagent.status.legacy')
-  return h('section', { className: 'dsh-mc-section dsh-mc-subagent-section' },
-    h('div', { className: 'dsh-mc-section-heading' },
-      h('h3', { className: 'dsh-mc-section-title' }, t('subagent.title')),
-      h('span', { className: 'dsh-mc-section-caption' }, modeLabel),
-       h('p', { className: 'dsh-mc-muted' }, isNative ? t('subagent.native.description') : t('subagent.legacy.description')),
-    ),
+  return h(Panel, {
+    title: t('subagent.title'),
+    className: 'dsh-mc-subagent-panel',
+    caption: h('span', { className: 'dsh-mc-section-caption' }, modeLabel),
+  },
+    h('p', { className: 'dsh-mc-muted dsh-mc-subagent-description' }, isNative ? t('subagent.native.description') : t('subagent.legacy.description')),
     isNative
       ? h(NativeSection, {
           t, draft: nativeDraft, setDraft: setNativeDraft, setLegacyDraft, options, applyNative, modelSelectionEnabled,
           nativeWritable, controlWritable, enableModelSelection, error, status, legacyDraft, updateLegacyRoute,
           supportsReasoningEffort: capabilities.supportsReasoningEffort, supportsAgentOptions: capabilities.supportsAgentOptions,
           reasoningOptions, selectedProviderUnsupported, applyLegacy, applyDisabled: legacyApplyBlocked, agentOptionsUnsupported,
+          invalidReasoning: invalidExplicitReasoning,
         })
       : h(LegacySection, {
           t, draft: legacyDraft, updateRoute: updateLegacyRoute, setDraft: setLegacyDraft, selectedProviderUnsupported,
           reasoningOptions, supportsReasoningEffort: capabilities.supportsReasoningEffort, supportsAgentOptions: capabilities.supportsAgentOptions,
           applyLegacy, applyDisabled: legacyApplyBlocked, agentOptionsUnsupported, error, status, options,
+          invalidReasoning: invalidExplicitReasoning,
         }),
   )
 }
 
 function LegacySection(props: any): any {
-  const { t, draft, updateRoute, setDraft, selectedProviderUnsupported, reasoningOptions, supportsReasoningEffort, supportsAgentOptions, applyLegacy, applyDisabled, agentOptionsUnsupported, error, status, options } = props
+  const { t, draft, updateRoute, setDraft, selectedProviderUnsupported, reasoningOptions, supportsReasoningEffort, supportsAgentOptions, applyLegacy, applyDisabled, agentOptionsUnsupported, error, status, options, invalidReasoning } = props
   const h = createElement
   return h('div', { className: 'dsh-mc-setting-rows' },
     h(SettingRow, {
@@ -342,6 +400,7 @@ function LegacySection(props: any): any {
               label: t('subagent.reasoningEffort'),
               control: h(CompactSelect, { value: draft.reasoningEffort, options: reasoningOptions, onChange: (reasoningEffort: string) => setDraft({ ...draft, reasoningEffort }), placeholder: t('subagent.reasoning.auto'), ariaLabel: t('subagent.reasoningEffort') }),
             }) : null,
+            invalidReasoning ? h('p', { className: 'dsh-mc-setting-warning' }, t('subagent.reasoning.unsupportedBlocked')) : null,
           ) : null,
     error ? h('p', { className: 'dsh-mc-error' }, error) : null,
     status ? h('p', { className: 'dsh-mc-muted' }, status) : null,
@@ -350,7 +409,7 @@ function LegacySection(props: any): any {
 }
 
 function NativeSection(props: any): any {
-  const { t, draft, setDraft, setLegacyDraft, options, applyNative, modelSelectionEnabled, nativeWritable, controlWritable, enableModelSelection, error, status, legacyDraft, updateLegacyRoute, supportsReasoningEffort, supportsAgentOptions, reasoningOptions, selectedProviderUnsupported, applyLegacy, applyDisabled } = props
+  const { t, draft, setDraft, setLegacyDraft, options, applyNative, modelSelectionEnabled, nativeWritable, controlWritable, enableModelSelection, error, status, legacyDraft, updateLegacyRoute, supportsReasoningEffort, supportsAgentOptions, reasoningOptions, selectedProviderUnsupported, applyLegacy, applyDisabled, invalidReasoning } = props
   const h = createElement
   if (!modelSelectionEnabled) {
     return h('div', { className: 'dsh-mc-setting-rows' },
@@ -392,7 +451,7 @@ function NativeSection(props: any): any {
       h(LegacySection, {
         t, draft: legacyDraft, updateRoute: updateLegacyRoute, setDraft: setLegacyDraft,
         selectedProviderUnsupported, reasoningOptions, supportsReasoningEffort, supportsAgentOptions,
-        applyLegacy, applyDisabled, options,
+        applyLegacy, applyDisabled, options, invalidReasoning,
       }),
     ),
     error ? h('p', { className: 'dsh-mc-error' }, error) : null,

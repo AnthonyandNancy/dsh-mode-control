@@ -14,10 +14,9 @@ import { createElement, useEffect, useRef, useState } from 'react'
 import {
   asArray,
   asRecord,
-  catalogModelIds,
   defaultReasoningWire,
-  declaredModelIds,
   detectDshMode,
+  editableModelIds,
   isAnthropicModel,
   isAnthropicProvider,
   parseModelDraft,
@@ -31,13 +30,18 @@ import {
   type PiAiReasoningLevel,
   type ProviderDraft,
 } from './ops.ts'
+import {
+  parseUnsupportedReasoningEffortError,
+  reasoningMismatch,
+  resolveRuntimeReasoningCapability,
+} from './reasoning-capabilities.ts'
 import { COMPAT_FIELDS, isCompatFieldApplicable, type CompatFieldDefinition } from './compat-fields.ts'
 import { emptyCompatDrafts, type CompatDrafts } from './compat-state.ts'
 import { CompatDisclosure, CompatGroupSection } from './compat-ui.ts'
 import { collectEnumOptions, collectRuntimeCapabilities, protocolsForModel, protocolsForProvider, schemaObjectKeys, subagentRuntimeFactsFromValue, type RuntimeCapabilities } from './runtime-capabilities.ts'
 import { SubagentSettingsCard } from './subagent-ui.ts'
 import { SUBAGENT_MODEL_SELECTION_NAMESPACE, SUBAGENT_NAMESPACE } from '../subagent/constants.ts'
-import { Chip, CompactSelect, DisclosureRow, InlineNumberEditor, SettingRow } from './ui.ts'
+import { Chip, CompactSelect, DisclosureRow, InlineNumberEditor, Panel, SettingRow, Subsection } from './ui.ts'
 import { buildModelRouteOptions, ModelRoutePicker } from './model-picker.ts'
 import { collectOpsForAllProviders } from './save-helpers.ts'
 
@@ -105,18 +109,6 @@ const EMPTY_STATE: CapabilitiesState = {
   subagentControl: { value: {}, writable: true },
   nativeSubagent: { writable: true },
   enumOptions: { maxTokensField: [], thinkingFormat: [], cacheControlFormat: [] },
-}
-
-function modelListOf(
-  _provider: string,
-  providerConfig: unknown,
-  _catalogGroups: unknown[],
-): string[] {
-  return declaredModelIds(providerConfig)
-}
-
-function catalogModelListOf(provider: string, providerConfig: unknown, catalogGroups: unknown[]): string[] {
-  return catalogModelIds(provider, providerConfig, catalogGroups)
 }
 
 function modelConfigOf(providerConfig: unknown, model: string): unknown {
@@ -201,24 +193,26 @@ function compatApplicableMap(
   return { applicable, existing }
 }
 
-function reasoningEffortsOf(modelDraft: ModelDraft | undefined, providerDraft: ProviderDraft | undefined): string[] {
-  if (!modelDraft) return []
-  if (modelDraft.reasoningMode === 'unsupported') return []
-  if (modelDraft.reasoningMode === 'custom') return modelDraft.efforts
-  if (providerDraft?.defaultReasoning) return [providerDraft.defaultReasoning]
-  return []
-}
-
 function injectStyles(): void {
   const id = '@deepseek-ai/dsh-llm-pi-ai-capabilities/styles'
   if (typeof document === 'undefined' || document.querySelector(`style[data-plugin-css="${id}"]`)) return
   const css = `
 .dsh-mc-root{width:100%;min-width:0;color:var(--dsw-alias-label-primary);flex-direction:column;gap:18px;display:flex;box-sizing:border-box}
-.dsh-mc-title{color:var(--dsw-alias-label-primary);margin:0;font-size:16px;font-weight:500;line-height:24px}
+.dsh-mc-title{color:var(--dsw-alias-label-primary);margin:0;font-size:17px;font-weight:600;line-height:24px}
 .dsh-mc-intro{color:var(--dsw-alias-label-tertiary);margin:-10px 0 0;font-size:13px;line-height:20px}
 .dsh-mc-section{min-width:0;display:flex;flex-direction:column;gap:2px}
 .dsh-mc-section-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:0 0 5px;border-bottom:1px solid var(--dsw-alias-border-l2)}
-.dsh-mc-section-title{color:var(--dsw-alias-label-primary);margin:0;font-size:14px;font-weight:500;line-height:22px}
+.dsh-mc-section-title{color:var(--dsw-alias-label-primary);margin:0;font-size:14px;font-weight:600;line-height:22px}
+.dsh-mc-panel{min-width:0;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;padding:10px 12px;background:var(--dsw-alias-background);display:flex;flex-direction:column;gap:10px;box-sizing:border-box}
+.dsh-mc-panel-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0}
+.dsh-mc-panel-title{color:var(--dsw-alias-label-primary);margin:0;font-size:14px;font-weight:600;line-height:20px}
+.dsh-mc-panel-action{flex:none;display:flex;align-items:center}
+.dsh-mc-panel-caption{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;margin:-2px 0 0}
+.dsh-mc-panel-body{min-width:0;display:flex;flex-direction:column;gap:10px}
+.dsh-mc-subsection{min-width:0;display:flex;flex-direction:column;gap:2px;margin-top:8px}
+.dsh-mc-subsection-title{color:var(--dsw-alias-label-secondary);margin:0;font-size:12px;font-weight:600;line-height:18px}
+.dsh-mc-subsection-body{min-width:0;display:flex;flex-direction:column}
+.dsh-mc-subagent-description{margin:-4px 0 0}
 .dsh-mc-section-caption{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
 .dsh-mc-setting-rows{display:flex;flex-direction:column;min-width:0}
 .dsh-mc-setting-row{min-height:40px;padding:4px 0;box-sizing:border-box;display:flex;align-items:center;justify-content:space-between;gap:16px}
@@ -296,16 +290,13 @@ function ModeStatus(props: any): any {
   const h = createElement
   switch (mode) {
     case 'rc8':
-      return h('p', { className: 'dsh-mc-mode dsh-mc-mode-native' }, t('modeNative'))
+      return h('span', { className: 'dsh-mc-mode dsh-mc-mode-native', title: t('modeNativeDetail') }, t('modeNative'))
     case 'rc6':
-      return h('p', { className: 'dsh-mc-mode dsh-mc-mode-legacy' },
-        t('modeLegacyRc6Title'), h('br'), t('modeLegacyRc6Detail'))
+      return h('span', { className: 'dsh-mc-mode dsh-mc-mode-legacy', title: t('modeLegacyRc6Detail') }, t('modeLegacyRc6Title'))
     case 'rc7':
-      return h('p', { className: 'dsh-mc-mode dsh-mc-mode-legacy' },
-        t('modeLegacyRc7Title'), h('br'), t('modeLegacyRc7Detail'))
+      return h('span', { className: 'dsh-mc-mode dsh-mc-mode-legacy', title: t('modeLegacyRc7Detail') }, t('modeLegacyRc7Title'))
     case 'legacy':
-      return h('p', { className: 'dsh-mc-mode dsh-mc-mode-legacy' },
-        t('modeLegacyTitle'), h('br'), t('modeLegacyDetail'))
+      return h('span', { className: 'dsh-mc-mode dsh-mc-mode-legacy', title: t('modeLegacyDetail') }, t('modeLegacyTitle'))
     default:
       return null
   }
@@ -378,7 +369,7 @@ function CapabilitiesSection(props: any): any {
       }
       for (const provider of providerNames) {
         const providerConfig = providers[provider]
-        const ids = modelListOf(provider, providerConfig, groups)
+        const ids = editableModelIds(provider, providerConfig, groups)
         for (const model of ids) {
           const modelConfig = modelConfigOf(providerConfig, model)
           modelDrafts[provider][model] = parseModelDraft(modelConfig)
@@ -557,7 +548,6 @@ function CapabilitiesSection(props: any): any {
     const next = draft.efforts.includes(level)
       ? draft.efforts.filter(item => item !== level)
       : [...draft.efforts, level]
-    if (next.length === 0) return
     const wire = { ...draft.wire }
     if (!next.includes(level)) delete wire[level as PiAiReasoningLevel]
     updateModelDraft({ efforts: next, wire })
@@ -606,6 +596,18 @@ function CapabilitiesSection(props: any): any {
     let ops: ReturnType<typeof collectOpsForAllProviders>
     const dirtyProviders = new Set(dirtyProvidersRef.current)
     const saveVersion = dirtyVersionRef.current
+    for (const provider of dirtyProviders) {
+      const dirtyModels = dirtyModelFieldsRef.current.get(provider)
+      if (!dirtyModels) continue
+      for (const model of dirtyModels.keys()) {
+        const draft = state.modelDrafts[provider]?.[model]
+        if (draft?.reasoningMode === 'custom' && draft.efforts.length === 0) {
+          saveInFlightRef.current = false
+          setState(prev => ({ ...prev, saved: undefined, error: t('reasoningEmptyError') }))
+          return
+        }
+      }
+    }
     try {
       ops = collectOpsForAllProviders(
         Object.keys(state.providers), state.providers, state.providerDrafts, state.modelDrafts,
@@ -637,7 +639,11 @@ function CapabilitiesSection(props: any): any {
       })
     }).catch((error: any) => {
       const message = String(error?.message ?? error)
-      setState(prev => ({ ...prev, error: message }))
+      const parsed = parseUnsupportedReasoningEffortError(message)
+      const friendly = parsed
+        ? `${t('reasoningEffortUnsupportedTitle')}${parsed.provider && parsed.model ? `\n${parsed.provider} / ${parsed.model}` : ''}${parsed.effort ? `\n${t('reasoningEffortUnsupportedHit')}: ${parsed.effort}` : ''}`
+        : undefined
+      setState(prev => ({ ...prev, error: friendly ?? message }))
       // Keep the conflict visible so the user can choose when to reload.
     }).finally(() => { saveInFlightRef.current = false })
   }
@@ -699,7 +705,10 @@ function CapabilitiesSection(props: any): any {
     return ['text']
   })()
 
-  const resolvedReasoning = reasoningEffortsOf(activeDraft, providerDraft)
+  const runtimeReasoning = activeModel
+    ? resolveRuntimeReasoningCapability(state.catalogGroups, provider, activeModel)
+    : { available: false, efforts: [], source: 'unknown' as const }
+  const mismatch = activeDraft ? reasoningMismatch(activeDraft, runtimeReasoning) : { mismatch: false, authoring: [], runtime: [], missing: [], unresolved: false }
 
   const resolvedSource = (() => {
     if (!activeDraft) return ''
@@ -708,16 +717,13 @@ function CapabilitiesSection(props: any): any {
     return t('sourceUnknown')
   })()
 
-  const modelsByProvider: Record<string, string[]> = {}
-  const configuredModelsByProvider: Record<string, string[]> = {}
+  const editableModelsByProvider: Record<string, string[]> = {}
   const reasoningEffortsByModel: Record<string, string[]> = {}
   for (const name of providerNames) {
-    const ids = catalogModelListOf(name, state.providers[name], state.catalogGroups)
-    modelsByProvider[name] = ids
-    configuredModelsByProvider[name] = modelListOf(name, state.providers[name], [])
+    const ids = editableModelIds(name, state.providers[name], state.catalogGroups)
+    editableModelsByProvider[name] = ids
     for (const model of ids) {
-      const draft = state.modelDrafts[name]?.[model]
-      reasoningEffortsByModel[`${name}\u0000${model}`] = draft?.efforts ?? []
+      reasoningEffortsByModel[`${name}\u0000${model}`] = resolveRuntimeReasoningCapability(state.catalogGroups, name, model).efforts
     }
   }
   const providerSupportsAgentOptions: Record<string, boolean> = {}
@@ -725,14 +731,41 @@ function CapabilitiesSection(props: any): any {
     providerSupportsAgentOptions[providerSnapshot.name] = providerSnapshot.supportsAgentOptions
   }
 
+  const providerDefaultMissing = (() => {
+    const defaultReasoning = providerDraft?.defaultReasoning ?? ''
+    if (defaultReasoning === '') return []
+    const missing: string[] = []
+    for (const group of asArray(state.catalogGroups)) {
+      const g = asRecord(group)
+      if (g['id'] !== provider) continue
+      for (const item of asArray(g['models'])) {
+        const m = asRecord(item)
+        const id = typeof m['id'] === 'string' ? m['id'] as string : ''
+        if (id === '') continue
+        const cap = resolveRuntimeReasoningCapability(state.catalogGroups, provider, id)
+        if (cap.available && !cap.efforts.includes(defaultReasoning)) missing.push(id)
+      }
+    }
+    return missing
+  })()
+
+  const runtimeLabel = activeDraft?.reasoningMode === 'unsupported'
+    ? t('unsupported')
+    : runtimeReasoning.available && runtimeReasoning.efforts.length > 0
+      ? runtimeReasoning.efforts.map(levelLabel).join(' \u00b7 ')
+      : t('reasoningNotDeclared')
+
+  const customEffortsLabel = activeDraft && activeDraft.efforts.length > 0
+    ? activeDraft.efforts.map(levelLabel).join(' \u00b7 ')
+    : t('notSelected')
+
   return h('div', { className: 'dsh-mc-root' },
     h('h2', { className: 'dsh-mc-title' }, t('nav')),
     h('p', { className: 'dsh-mc-intro' }, t('pageDescription')),
     state.error ? h('div', { className: 'dsh-mc-feedback' }, h('p', { className: 'dsh-mc-error' }, state.error), h('button', { type: 'button', className: 'dsh-mc-link-button', onClick: () => void load(true) }, t('reload'))) : null,
     state.saved ? h('p', { className: 'dsh-mc-saved' }, state.saved) : null,
 
-    h('section', { className: 'dsh-mc-section' },
-      h('div', { className: 'dsh-mc-section-heading' }, h('h3', { className: 'dsh-mc-section-title' }, t('modelCapabilities'))),
+    providerDraft ? h(Panel, { title: t('providerSettings'), className: 'dsh-mc-provider-panel', caption: h(ModeStatus, { mode: state.dshMode, t }) },
       h(SettingRow, {
         label: t('provider'),
         control: h(CompactSelect, {
@@ -742,119 +775,111 @@ function CapabilitiesSection(props: any): any {
           ariaLabel: t('provider'),
         }),
       }),
-    ),
-
-    // Provider default capabilities.
-    providerDraft ? h('section', { className: 'dsh-mc-section' },
-      h('div', { className: 'dsh-mc-section-heading' },
-        h('h3', { className: 'dsh-mc-section-title' }, t('providerDefaults')),
-        h(ModeStatus, { mode: state.dshMode, t }),
+      h(Subsection, { title: t('defaultCapabilities') },
+        h(SettingRow, {
+          label: t('inputCapability'),
+          control: h('div', { className: 'dsh-mc-chips' }, MODALITIES.map(modality => h(Chip, {
+            key: modality,
+            label: modalityLabel(modality),
+            active: providerDraft.defaultInput.includes(modality),
+            onClick: () => updateProviderDraft({ defaultInput: toggleValue(providerDraft.defaultInput, modality) }),
+          }))),
+        }),
+        state.runtimeCaps.providerFields.has('defaultContextWindow') ? h(SettingRow, {
+          label: t('defaultContextWindow'),
+          control: h(InlineNumberEditor, { value: providerDraft.defaultContextWindow ?? '', onChange: value => updateProviderDraft({ defaultContextWindow: value }), placeholder: t('inherit'), ariaLabel: t('defaultContextWindow') }),
+        }) : null,
+        state.runtimeCaps.providerFields.has('defaultMaxTokens') ? h(SettingRow, {
+          label: t('defaultMaxTokens'),
+          control: h(InlineNumberEditor, { value: providerDraft.defaultMaxTokens ?? '', onChange: value => updateProviderDraft({ defaultMaxTokens: value }), placeholder: t('inherit'), ariaLabel: t('defaultMaxTokens') }),
+        }) : null,
       ),
-      h(SettingRow, {
-        label: t('inputCapability'),
-        control: h('div', { className: 'dsh-mc-chips' }, MODALITIES.map(modality => h(Chip, {
-          key: modality,
-          label: modalityLabel(modality),
-          active: providerDraft.defaultInput.includes(modality),
-          onClick: () => updateProviderDraft({ defaultInput: toggleValue(providerDraft.defaultInput, modality) }),
-        }))),
-      }),
-      state.runtimeCaps.providerFields.has('defaultContextWindow') ? h(SettingRow, {
-        label: t('defaultContextWindow'),
-        control: h(InlineNumberEditor, { value: providerDraft.defaultContextWindow ?? '', onChange: value => updateProviderDraft({ defaultContextWindow: value }), placeholder: t('inherit'), ariaLabel: t('defaultContextWindow') }),
-      }) : null,
-      state.runtimeCaps.providerFields.has('defaultMaxTokens') ? h(SettingRow, {
-        label: t('defaultMaxTokens'),
-        control: h(InlineNumberEditor, { value: providerDraft.defaultMaxTokens ?? '', onChange: value => updateProviderDraft({ defaultMaxTokens: value }), placeholder: t('inherit'), ariaLabel: t('defaultMaxTokens') }),
-      }) : null,
-    ) : null,
-
-    // Provider reasoning.
-    providerDraft ? h('section', { className: 'dsh-mc-section' },
-      h('div', { className: 'dsh-mc-section-heading' }, h('h3', { className: 'dsh-mc-section-title' }, t('reasoningCapabilities'))),
-      h(SettingRow, {
-        label: t('defaultReasoning'),
-        control: h(CompactSelect, {
-          value: providerDraft.defaultReasoning,
-          options: [{ value: '', label: t('inherit') }, ...LEVELS.map(level => ({ value: level, label: levelLabel(level) }))],
-          onChange: (value: string) => updateProviderDraft({ defaultReasoning: value }),
-          placeholder: t('inherit'),
-          ariaLabel: t('defaultReasoning'),
-        }),
-      }),
-      anthropic ? h(SettingRow, {
-        label: t('anthropicReasoningEffort'),
-        control: h(CompactSelect, {
-          value: providerDraft.adaptiveThinking,
-          options: [{ value: 'inherit', label: t('inherit') }, { value: 'enabled', label: t('adaptiveEnabled') }, { value: 'disabled', label: t('adaptiveDisabled') }],
-          onChange: (value: string) => updateProviderDraft({ adaptiveThinking: value as AdaptiveThinkingMode }),
-          ariaLabel: t('anthropicReasoningEffort'),
-        }),
-      }) : null,
-      h(DisclosureRow, { summary: t('thinkingBudgets'), value: Object.keys(providerDraft.thinkingBudgets ?? {}).length === 0 ? t('inherit') : t('configured') },
-        h('div', { className: 'dsh-mc-setting-rows' }, ['minimal', 'low', 'medium', 'high'].map(level => h(SettingRow, {
-          key: level,
-          label: levelLabel(level),
-          control: h(InlineNumberEditor, {
-            value: providerDraft.thinkingBudgets?.[level] ?? '',
-            onChange: (value: string) => {
-              const budgets = { ...providerDraft.thinkingBudgets }
-              if (value.trim() === '') delete budgets[level]
-              else budgets[level] = value
-              updateProviderDraft({ thinkingBudgets: budgets })
-            },
+      h(Subsection, { title: t('reasoningCapabilities') },
+        h(SettingRow, {
+          label: t('defaultRequestReasoning'),
+          title: t('defaultReasoningHint'),
+          description: t('defaultReasoningHint'),
+          warning: providerDefaultMissing.length > 0 ? t('defaultReasoningPartialWarning') : undefined,
+          control: h(CompactSelect, {
+            value: providerDraft.defaultReasoning,
+            options: [{ value: '', label: t('inherit') }, ...LEVELS.map(level => ({ value: level, label: levelLabel(level) }))],
+            onChange: (value: string) => updateProviderDraft({ defaultReasoning: value }),
             placeholder: t('inherit'),
-            ariaLabel: level,
+            ariaLabel: t('defaultRequestReasoning'),
           }),
-        }))),
+        }),
+        anthropic ? h(SettingRow, {
+          label: t('anthropicReasoningEffort'),
+          control: h(CompactSelect, {
+            value: providerDraft.adaptiveThinking,
+            options: [{ value: 'inherit', label: t('inherit') }, { value: 'enabled', label: t('adaptiveEnabled') }, { value: 'disabled', label: t('adaptiveDisabled') }],
+            onChange: (value: string) => updateProviderDraft({ adaptiveThinking: value as AdaptiveThinkingMode }),
+            ariaLabel: t('anthropicReasoningEffort'),
+          }),
+        }) : null,
+        h(DisclosureRow, { summary: t('thinkingBudgets'), value: Object.keys(providerDraft.thinkingBudgets ?? {}).length === 0 ? t('inherit') : t('configured') },
+          h('div', { className: 'dsh-mc-setting-rows' }, ['minimal', 'low', 'medium', 'high'].map(level => h(SettingRow, {
+            key: level,
+            label: levelLabel(level),
+            control: h(InlineNumberEditor, {
+              value: providerDraft.thinkingBudgets?.[level] ?? '',
+              onChange: (value: string) => {
+                const budgets = { ...providerDraft.thinkingBudgets }
+                if (value.trim() === '') delete budgets[level]
+                else budgets[level] = value
+                updateProviderDraft({ thinkingBudgets: budgets })
+              },
+              placeholder: t('inherit'),
+              ariaLabel: level,
+            }),
+          }))),
+        ),
       ),
-    ) : null,
-
-    // Interface compatibility (provider level).
-    providerDraft ? h('section', { className: 'dsh-mc-section' },
-      h('div', { className: 'dsh-mc-section-heading' }, h('h3', { className: 'dsh-mc-section-title' }, t('interfaceCompatibility'))),
-      h(CompatGroupSection, {
-        fields: providerCommon,
-        drafts: providerCompat,
-        applicable: providerCommonMap.applicable,
-        existing: providerCommonMap.existing,
-        enumOptions: state.enumOptions,
-        level: 'provider',
-        t,
-        onChange: updateProviderCompat,
-      }),
-      h(CompatDisclosure, {
-        summary: t('advancedCompatibility'), fields: providerAdvanced, drafts: providerCompat,
-        applicable: providerAdvancedMap.applicable, existing: providerAdvancedMap.existing,
-        enumOptions: state.enumOptions, level: 'provider', t, onChange: updateProviderCompat,
-      }),
-      h(CompatDisclosure, {
-        summary: t('anthropicCompatibility'), fields: providerAnthropic, drafts: providerCompat,
-        applicable: providerAnthropicMap.applicable, existing: providerAnthropicMap.existing,
-        enumOptions: state.enumOptions, level: 'provider', t, onChange: updateProviderCompat,
-      }),
+      h(Subsection, { title: t('interfaceCompatibility') },
+        h(CompatGroupSection, {
+          fields: providerCommon,
+          drafts: providerCompat,
+          applicable: providerCommonMap.applicable,
+          existing: providerCommonMap.existing,
+          enumOptions: state.enumOptions,
+          level: 'provider',
+          t,
+          onChange: updateProviderCompat,
+        }),
+        h(CompatDisclosure, {
+          summary: t('advancedCompatibility'), fields: providerAdvanced, drafts: providerCompat,
+          applicable: providerAdvancedMap.applicable, existing: providerAdvancedMap.existing,
+          enumOptions: state.enumOptions, level: 'provider', t, onChange: updateProviderCompat,
+        }),
+        h(CompatDisclosure, {
+          summary: t('anthropicCompatibility'), fields: providerAnthropic, drafts: providerCompat,
+          applicable: providerAnthropicMap.applicable, existing: providerAnthropicMap.existing,
+          enumOptions: state.enumOptions, level: 'provider', t, onChange: updateProviderCompat,
+        }),
+      ),
     ) : null,
 
     h(SubagentSettingsCard, {
       t, api, capabilities: state.runtimeCaps.subagent,
       controlValue: state.subagentControl.value, controlRevision: state.subagentControl.revision,
       controlWritable: state.subagentControl.writable, nativeNamespace: state.nativeSubagent,
-      providerNames, modelsByProvider, reasoningEffortsByModel, providerSupportsAgentOptions,
-       onApplied: () => void load(true),
+      providerNames, editableModelsByProvider, reasoningEffortsByModel, providerSupportsAgentOptions,
+      onApplied: () => void load(true),
     }),
 
     modelIds.length === 0
       ? h('p', { className: 'dsh-mc-empty' }, t('noModels'))
-      : activeDraft ? h('section', { className: 'dsh-mc-section' },
-          h('div', { className: 'dsh-mc-section-heading' },
-            h('h3', { className: 'dsh-mc-section-title' }, t('modelSettings')),
-            h('button', { type: 'button', className: 'dsh-mc-link-button', onClick: resetModel }, t('resetModel')),
-          ),
+      : activeDraft ? h(Panel, {
+          title: t('modelSettings'),
+          className: 'dsh-mc-model-panel',
+          action: h('button', { type: 'button', className: 'dsh-mc-link-button', onClick: resetModel }, t('resetModel')),
+        },
+        h(Subsection, { title: t('basicCapabilities') },
           h(SettingRow, {
             label: t('currentModel'),
-             description: resolvedSource,
+            description: resolvedSource,
             control: h(ModelRoutePicker, {
-              options: buildModelRouteOptions(providerNames, configuredModelsByProvider, { current: { provider, model: activeModel } }),
+              options: buildModelRouteOptions(providerNames, editableModelsByProvider, { current: { provider, model: activeModel } }),
               value: { provider, model: activeModel },
               onChange: changeModelRoute,
               ariaLabel: t('currentModel'),
@@ -873,11 +898,11 @@ function CapabilitiesSection(props: any): any {
             }))),
           }),
           h(SettingRow, {
-             label: t('resolvedCapability'),
-             description: resolvedSource,
-             control: h('span', { className: 'dsh-mc-muted' }, `${resolvedInput.join(', ')}${resolvedReasoning.length > 0 ? ` · ${resolvedReasoning.join(', ')}` : ''}`),
-           }),
-           state.runtimeCaps.modelFields.has('contextWindow') ? h(SettingRow, {
+            label: t('resolvedInput'),
+            description: resolvedSource,
+            control: h('span', { className: 'dsh-mc-muted' }, resolvedInput.join(', ')),
+          }),
+          state.runtimeCaps.modelFields.has('contextWindow') ? h(SettingRow, {
             label: t('modelContextWindow'),
             control: h(InlineNumberEditor, { value: activeDraft.contextWindow ?? '', onChange: value => updateModelDraft({ contextWindow: value }), placeholder: t('inherit'), ariaLabel: t('modelContextWindow') }),
           }) : null,
@@ -885,60 +910,74 @@ function CapabilitiesSection(props: any): any {
             label: t('modelMaxTokens'),
             control: h(InlineNumberEditor, { value: activeDraft.maxTokens ?? '', onChange: value => updateModelDraft({ maxTokens: value }), placeholder: t('inherit'), ariaLabel: t('modelMaxTokens') }),
           }) : null,
-          h(DisclosureRow, {
-            summary: t('reasoningCapability'),
-            value: activeDraft.reasoningMode === 'custom' ? `${activeDraft.efforts.length} ${t('reasoningLevels')}` : activeDraft.reasoningMode === 'unsupported' ? t('unsupported') : t('inherit'),
-          },
-          h('div', { className: 'dsh-mc-setting-rows' },
-            h(SettingRow, {
-              label: t('reasoningCapability'),
-              control: h(CompactSelect, {
-                value: activeDraft.reasoningMode,
-                options: [{ value: 'inherit', label: t('inherit') }, { value: 'unsupported', label: t('unsupported') }, { value: 'custom', label: t('custom') }],
-                onChange: (value: string) => updateModelDraft(value === 'custom'
-                  ? { reasoningMode: 'custom', efforts: activeDraft.efforts.length > 0 ? activeDraft.efforts : ['medium'], wire: activeDraft.wire }
-                  : { reasoningMode: value as 'inherit' | 'unsupported', efforts: [], wire: {} }),
-                ariaLabel: t('reasoningCapability'),
-              }),
+        ),
+        h(Subsection, { title: t('reasoningConfig') },
+          h(SettingRow, {
+            label: t('reasoningCapability'),
+            control: h(CompactSelect, {
+              value: activeDraft.reasoningMode,
+              options: [{ value: 'inherit', label: t('inherit') }, { value: 'unsupported', label: t('unsupported') }, { value: 'custom', label: t('custom') }],
+              onChange: (value: string) => updateModelDraft(value === 'custom'
+                ? { reasoningMode: 'custom', efforts: activeDraft.efforts, wire: activeDraft.wire }
+                : { reasoningMode: value as 'inherit' | 'unsupported', efforts: [], wire: {} }),
+              ariaLabel: t('reasoningCapability'),
             }),
-            activeDraft.reasoningMode === 'custom' ? h(SettingRow, {
-              label: t('reasoningLevels'),
+          }),
+          h(SettingRow, {
+            label: t('dshCurrentReasoning'),
+            control: h('span', { className: 'dsh-mc-muted' }, runtimeLabel),
+          }),
+          activeDraft.reasoningMode === 'custom' ? h(DisclosureRow, {
+            summary: t('declaredReasoningLevels'),
+            value: customEffortsLabel,
+            description: activeDraft.efforts.length === 0 ? t('reasoningEmptyHint') : undefined,
+          },
+          h('div', { className: 'dsh-mc-setting-rows dsh-mc-reasoning-levels' },
+            h(SettingRow, {
+              label: t('declaredReasoningLevels'),
               control: h('div', { className: 'dsh-mc-chips' }, LEVELS.map(level => h(Chip, {
                 key: level, label: levelLabel(level), active: activeDraft.efforts.includes(level), onClick: () => toggleReasoningLevel(level),
               }))),
-            }) : null,
-            activeDraft.reasoningMode === 'custom' ? h(DisclosureRow, { summary: t('reasoningWire'), value: t('configured') },
-              h('div', { className: 'dsh-mc-setting-rows' }, activeDraft.efforts.map(level => h(SettingRow, {
-                key: level,
-                label: levelLabel(level),
-                control: h('input', {
-                  className: 'dsh-mc-inline-input',
-                  value: reasoningWireFor(activeDraft, level as PiAiReasoningLevel, modelAnthropic) ?? '',
-                  onChange: (event: any) => updateReasoningWire(level, event.target.value),
-                  'aria-label': level,
-                }),
-              }))),
-            ) : null,
-          )),
-          h(DisclosureRow, { summary: t('modelCompatDisclosure') },
-            h('div', { className: 'dsh-mc-disclosure-fields' },
-              h(CompatGroupSection, {
-                fields: modelCompatFields.filter(field => field.group === 'common'), drafts: activeCompatDrafts,
-                applicable: modelCompatMap.applicable, existing: modelCompatMap.existing,
-                enumOptions: state.enumOptions, level: 'model', t, onChange: updateModelCompat,
+            }),
+          )) : null,
+          activeDraft.reasoningMode === 'custom' ? h(DisclosureRow, { summary: t('reasoningWire'), value: t('configured') },
+            h('div', { className: 'dsh-mc-setting-rows' }, activeDraft.efforts.map(level => h(SettingRow, {
+              key: level,
+              label: levelLabel(level),
+              control: h('input', {
+                className: 'dsh-mc-inline-input',
+                value: reasoningWireFor(activeDraft, level as PiAiReasoningLevel, modelAnthropic) ?? '',
+                onChange: (event: any) => updateReasoningWire(level, event.target.value),
+                'aria-label': level,
               }),
-              h(CompatDisclosure, {
-                summary: t('advancedCompatibility'), fields: modelCompatFields.filter(field => field.group === 'advanced'), drafts: activeCompatDrafts,
-                applicable: modelCompatMap.applicable, existing: modelCompatMap.existing,
-                enumOptions: state.enumOptions, level: 'model', t, onChange: updateModelCompat,
-              }),
-              h(CompatDisclosure, {
-                summary: t('anthropicCompatibility'), fields: modelCompatFields.filter(field => field.group === 'anthropic'), drafts: activeCompatDrafts,
-                applicable: modelCompatMap.applicable, existing: modelCompatMap.existing,
-                enumOptions: state.enumOptions, level: 'model', t, onChange: updateModelCompat,
-              }),
-            ),
+            }))),
+          ) : null,
+          activeDraft.reasoningMode === 'custom' && mismatch.mismatch ? h(SettingRow, {
+            label: t('declaredReasoningLevels'),
+            description: t('reasoningMismatchHint'),
+            warning: mismatch.unresolved ? t('reasoningUnresolvedWarning') : t('reasoningMismatchWarning'),
+            control: h('span', { className: 'dsh-mc-muted' }, mismatch.missing.map(levelLabel).join(' · ')),
+          }) : null,
+        ),
+        h(DisclosureRow, { summary: t('modelCompatDisclosure') },
+          h('div', { className: 'dsh-mc-disclosure-fields' },
+            h(CompatGroupSection, {
+              fields: modelCompatFields.filter(field => field.group === 'common'), drafts: activeCompatDrafts,
+              applicable: modelCompatMap.applicable, existing: modelCompatMap.existing,
+              enumOptions: state.enumOptions, level: 'model', t, onChange: updateModelCompat,
+            }),
+            h(CompatDisclosure, {
+              summary: t('advancedCompatibility'), fields: modelCompatFields.filter(field => field.group === 'advanced'), drafts: activeCompatDrafts,
+              applicable: modelCompatMap.applicable, existing: modelCompatMap.existing,
+              enumOptions: state.enumOptions, level: 'model', t, onChange: updateModelCompat,
+            }),
+            h(CompatDisclosure, {
+              summary: t('anthropicCompatibility'), fields: modelCompatFields.filter(field => field.group === 'anthropic'), drafts: activeCompatDrafts,
+              applicable: modelCompatMap.applicable, existing: modelCompatMap.existing,
+              enumOptions: state.enumOptions, level: 'model', t, onChange: updateModelCompat,
+            }),
           ),
+        ),
         ) : null,
 
     h('div', { className: 'dsh-mc-action-row' },
@@ -996,10 +1035,10 @@ const zh: Record<string, string> = {
   summaryInherit: '继承提供方',
   summaryCustom: '自定义',
   summaryUnsupported: '不支持推理',
-  modeNative: '原生模式 (rc.8) — 无需适配器补丁。',
-  modeLegacyRc6Title: '旧版兼容模式 (rc.6)',
+  modeNative: '原生模式 · rc.8',
+  modeLegacyRc6Title: '旧版兼容模式 · rc.6',
   modeLegacyRc6Detail: '需配套适配器补丁：不支持原生 settings 语义，能力配置只起提示作用。',
-  modeLegacyRc7Title: '旧版兼容模式 (rc.7)',
+  modeLegacyRc7Title: '旧版兼容模式 · rc.7',
   modeLegacyRc7Detail: '需配套适配器补丁：已支持原生 settings，但缺少部分 rc.8 字段。',
   modeLegacyTitle: '旧版兼容模式',
   modeLegacyDetail: '无法精确判定 rc 版本，请按文档确认适配器补丁。',
@@ -1112,6 +1151,31 @@ const zh: Record<string, string> = {
   'compat.supportsStrictTools.description': '兼容严格工具模式。',
   'compat.requiresExactFormatting.label': '要求精确格式化',
   'compat.requiresExactFormatting.description': '要求消息精确格式化。',
+
+  providerSettings: '提供方设置',
+  defaultCapabilities: '默认能力',
+  basicCapabilities: '基础能力',
+  reasoningConfig: '推理配置',
+  reasoningCapability: '推理能力',
+  custom: '自定义',
+  unsupported: '不支持推理',
+  defaultRequestReasoning: '默认请求推理等级',
+  defaultReasoningHint: '提供方级请求默认值。它不会声明所有模型都支持该推理等级。',
+  defaultReasoningPartialWarning: 'ⓘ 当前 Provider 中部分模型没有声明该默认等级。',
+  dshCurrentReasoning: 'DSH 当前支持',
+  declaredReasoningLevels: '声明推理等级',
+  reasoningEmptyHint: '请至少选择一个推理等级。',
+  reasoningNotDeclared: '未声明',
+  reasoningEmptyError: '当前模型处于“自定义推理能力”模式，请至少选择一个推理等级。',
+  reasoningMismatchHint: '保存后 DSH 可能尚未重新解析。',
+  reasoningMismatchWarning: '推理能力配置已保存，但 DSH 当前 exact model 尚未解析出全部声明等级。请检查 provider/model 路由及 modelOverride。如果当前会话仍报 Max 不支持，请在 DSH 原生模型选择器中将推理等级改为 Provider Default 或当前模型支持的档位。',
+  reasoningUnresolvedWarning: '推理能力配置已保存，但 DSH 当前 exact model 尚未解析出推理能力。请检查 provider/model 路由及 modelOverride。如果当前会话仍报 Max 不支持，请在 DSH 原生模型选择器中将推理等级改为 Provider Default 或当前模型支持的档位。',
+  resolvedInput: '解析输入',
+  reasoningEffortUnsupportedTitle: '推理等级不兼容',
+  reasoningEffortUnsupportedHit: '当前 DSH 没有声明支持',
+  modeNativeDetail: '无需适配器补丁。',
+  'subagent.reasoning.unsupportedSuffix': '（当前不支持）',
+  'subagent.reasoning.unsupportedBlocked': '当前模型不支持所选推理等级，请先切换到支持的档位。',
   'compat.supportsStreaming.label': '支持流式',
   'compat.supportsStreaming.description': '兼容流式响应。',
 }
@@ -1162,10 +1226,10 @@ const en: Record<string, string> = {
   summaryInherit: 'Inherits provider defaults',
   summaryCustom: 'Custom',
   summaryUnsupported: 'Unsupported',
-  modeNative: 'Native mode (rc.8) — no adapter patch required.',
-  modeLegacyRc6Title: 'Legacy compatibility (rc.6)',
+  modeNative: 'Native mode · rc.8',
+  modeLegacyRc6Title: 'Legacy compatibility · rc.6',
   modeLegacyRc6Detail: 'Requires the matching adapter patch; native settings semantics are unavailable.',
-  modeLegacyRc7Title: 'Legacy compatibility (rc.7)',
+  modeLegacyRc7Title: 'Legacy compatibility · rc.7',
   modeLegacyRc7Detail: 'Requires the matching adapter patch; some rc.8 fields are missing.',
   modeLegacyTitle: 'Legacy compatibility',
   modeLegacyDetail: 'Exact rc could not be determined; confirm the adapter patch version.',
@@ -1278,6 +1342,31 @@ const en: Record<string, string> = {
   'compat.supportsStrictTools.description': 'Accepts strict tool mode.',
   'compat.requiresExactFormatting.label': 'Requires exact formatting',
   'compat.requiresExactFormatting.description': 'Requires exact message formatting.',
+
+  providerSettings: 'Provider settings',
+  defaultCapabilities: 'Default capabilities',
+  basicCapabilities: 'Basic capabilities',
+  reasoningConfig: 'Reasoning',
+  reasoningCapability: 'Reasoning capability',
+  custom: 'Custom',
+  unsupported: 'Unsupported',
+  defaultRequestReasoning: 'Default request reasoning',
+  defaultReasoningHint: 'Provider-level request default. It does not declare that every model supports this effort.',
+  defaultReasoningPartialWarning: 'ⓘ Some models on this provider do not declare the default effort.',
+  dshCurrentReasoning: 'DSH currently supports',
+  declaredReasoningLevels: 'Declared reasoning levels',
+  reasoningEmptyHint: 'Select at least one reasoning level.',
+  reasoningNotDeclared: 'Not declared',
+  reasoningEmptyError: 'The current model is in "custom reasoning" mode; select at least one reasoning level.',
+  reasoningMismatchHint: 'DSH may not have re-resolved after save.',
+  reasoningMismatchWarning: 'Saved, but DSH has not resolved all declared levels for the exact model. Check the provider/model route and modelOverride. If the current session still reports Max unsupported, switch the reasoning level to Provider Default or a supported level in the native model selector.',
+  reasoningUnresolvedWarning: 'Saved, but DSH has not resolved reasoning for the exact model yet. Check the provider/model route and modelOverride. If the current session still reports Max unsupported, switch the reasoning level to Provider Default or a supported level in the native model selector.',
+  resolvedInput: 'Resolved input',
+  reasoningEffortUnsupportedTitle: 'Reasoning effort not supported',
+  reasoningEffortUnsupportedHit: 'DSH currently does not declare support for',
+  modeNativeDetail: 'No adapter patch required.',
+  'subagent.reasoning.unsupportedSuffix': '(currently unsupported)',
+  'subagent.reasoning.unsupportedBlocked': 'The current model does not support the selected reasoning level; switch to a supported level first.',
   'compat.supportsStreaming.label': 'Supports streaming',
   'compat.supportsStreaming.description': 'Accepts streaming responses.',
 }

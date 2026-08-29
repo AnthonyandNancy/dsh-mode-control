@@ -18,7 +18,7 @@ import {
   toReasoningEfforts,
   validateCapabilities,
 } from './compile.ts'
-import { registerSubagentSettings } from './subagent/config-service.ts'
+import { startSubagentSettingsRegistration } from './subagent/config-service.ts'
 
 export * from './types.ts'
 export {
@@ -34,10 +34,10 @@ export const name = '@deepseek-ai/dsh-llm-pi-ai-capabilities'
 export function apply(_ctx: any): void {
   // The subagent model control service registers its auditable settings
   // namespace only when the version gate passes. It uses the official loader
-  // Entry.update() API, never direct file/JS surgery.
-  void registerSubagentSettings(_ctx).catch((error: unknown) => {
-    _ctx.logger?.warn?.('[dsh-mode-control] subagent settings registration failed: %s', String(error))
-  })
+  // Entry.update() API, never direct file/JS surgery. Registration is
+  // lifecycle-aware: it retries when the tool-subagent loader entry appears
+  // later, and stays idempotent.
+  startSubagentSettingsRegistration(_ctx)
 }
 
 export default { name, apply }

@@ -81,10 +81,12 @@ export function asArray(value: unknown): unknown[] {
 }
 
 /**
- * Model ids the main Model Settings page may edit: declared `models[]`
- * entries plus `modelOverrides` keys. Catalog-only routes are intentionally
- * excluded — editing them would look like a save while no mutation targets
- * them.
+ * Explicitly declared model ids: `models[]` entries plus `modelOverrides`
+ * keys.
+ *
+ * This is an authoring/directory helper, not the "what may be edited" answer:
+ * a catalog-only route is still editable through a precise
+ * `modelOverrides.<model>.*` mutation once the user makes a first change.
  */
 export function declaredModelIds(providerConfig: unknown): string[] {
   const cfg = asRecord(providerConfig)
@@ -109,6 +111,25 @@ export function catalogModelIds(provider: string, providerConfig: unknown, catal
     }
   }
   return [...ids]
+}
+
+/**
+ * Model ids the Model Settings page may edit.
+ *
+ * - When the provider configures a non-empty `models[]`, that list replaces
+ *   the installed catalog. Only `models[].id` plus existing `modelOverrides`
+ *   keys (the DSH schema permits these alongside `models[]` for a subset of
+ *   targets) are editable; the replaced catalog is not mixed back in.
+ * - When no `models[]` is present the route still serves the installed
+ *   catalog. The editable set is catalog ids plus existing override keys, so
+ *   a catalog-only model becomes editable on its first precise override
+ *   mutation.
+ */
+export function editableModelIds(provider: string, providerConfig: unknown, catalogGroups: unknown[]): string[] {
+  const cfg = asRecord(providerConfig)
+  const models = asArray(cfg['models'])
+  if (models.length > 0) return declaredModelIds(providerConfig)
+  return catalogModelIds(provider, providerConfig, catalogGroups)
 }
 
 export function parseInput(value: unknown): string[] {
