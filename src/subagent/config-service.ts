@@ -16,11 +16,18 @@
  * Registration is lifecycle-aware: the plugin starts by trying immediately,
  * then listens for the tool-subagent loader entry appearing later. It is
  * idempotent and fail-closed for unknown versions.
+ *
+ * Lifecycle note: `loader/entry-init` fires from the `Entry` constructor
+ * before `EntryGroup.create()` calls `entry.update(options, true, true)`, so
+ * at that moment `entry.options` is still `{}` and `entry.id` is not usable.
+ * The reliable late-loading signal is `internal/plugin`, which fires after the
+ * entry's options are installed and the fiber is bound to the entry.
  */
 
 import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import z from 'schemastery'
 import { SUBAGENT_NAMESPACE, TOOL_ENTRY_ID } from './constants.ts'
 import { isSubagentVisible } from './version.ts'
@@ -36,6 +43,7 @@ export type SubagentVersionSource =
   | 'module'
   | 'package-export'
   | 'module-path-package'
+  | 'entry-base-package'
   | 'unknown'
 
 export type SubagentHiddenReason =
@@ -57,6 +65,14 @@ export interface SubagentRuntimeSnapshot {
   hiddenReason?: SubagentHiddenReason
   /** Whether a tool-subagent loader entry exists (even if disabled). */
   entryFound: boolean
+  /** Canonical tool-subagent loader entry id the service is targeting. */
+  targetEntryId?: string
+  /** Canonical tool-subagent toolName (config `toolName`) when known. */
+  targetToolName?: string
+  /** Canonical tool-subagent provider (config `provider`) when known. */
+  targetProvider?: string
+  /** Canonical tool-subagent loader base URL, for diagnostics. */
+  targetBaseUrl?: string
   /** Top-level keys of the loaded tool-subagent Config schema. */
   toolSubagentSchemaFields: string[]
   /** Keys of the loaded tool-subagent `agentOptions` schema. */
@@ -81,6 +97,12 @@ const AgentOptionsSchema = z.object({
 
 const RuntimeSchema = z.object({
   effectiveVersion: z.string().default(undefined as unknown as string),
+  versionSource: z.string().default(undefined as unknown as string),
+  hiddenReason: z.string().default(undefined as unknown as string),
+  targetEntryId: z.string().default(undefined as unknown as string),
+  targetToolName: z.string().default(undefined as unknown as string),
+  targetProvider: z.string().default(undefined as unknown as string),
+  targetBaseUrl: z.string().default(undefined as unknown as string),
   entryFound: z.boolean(),
   toolSubagentSchemaFields: z.array(z.string()).default(undefined as unknown as string[]),
   agentOptionsSchemaFields: z.array(z.string()).default(undefined as unknown as string[]),
@@ -91,6 +113,12 @@ const RuntimeSchema = z.object({
   })).default(undefined as unknown as SubagentProviderSnapshot[]),
 }).default(undefined as unknown as SubagentRuntimeSnapshot & {
   effectiveVersion: string
+  versionSource: string
+  hiddenReason: string
+  targetEntryId: string
+  targetToolName: string
+  targetProvider: string
+  targetBaseUrl: string
   toolSubagentSchemaFields: string[]
   agentOptionsSchemaFields: string[]
   modelSelectionSettings: boolean
@@ -103,18 +131,146 @@ export const SubagentControlSchema = z.object({
   modelSelectionSettings: z.boolean().default(undefined as unknown as boolean),
 })
 
-function entryOf(ctx: HostContext): { entry: any } | undefined {
-  const loader = (ctx as any).loader
-  if (!loader?.entries) return undefined
-  for (const entry of loader.entries()) {
-    const id = entry?.id ?? ''
-    const name = entry?.options?.name ?? ''
-    if (id === TOOL_ENTRY_ID || id.endsWith(`:${TOOL_ENTRY_ID}`) || name === '@deepseek-ai/dsh-tool-subagent') {
-      return { entry }
-    }
+const SUBAGENT_PACKAGE = '@deepseek-ai/dsh-tool-subagent'
+
+// ---------------------------------------------------------------------------
+// Canonical tool-subagent entry selection
+// ---------------------------------------------------------------------------
+
+export interface ToolSubagentEntryMatch {
+  entry: any
+  id: string
+  provider?: string
+  toolName?: string
+  baseUrl?: string | URL
+  packageName?: string
+}
+
+/** Resolve the module base URL a loader entry actually resolves from. */
+export function entryBaseUrl(entry: any): string | URL | undefined {
+  if (!entry) return undefined
+  const candidates = [
+    entry?.parent?.tree?.ctx?.baseUrl,
+    entry?.ctx?.baseUrl,
+    entry?.loader?.ctx?.baseUrl,
+    entry?.tree?.ctx?.baseUrl,
+  ]
+  for (const candidate of candidates) {
+    if (candidate !== undefined && candidate !== null && candidate !== '') return candidate
   }
   return undefined
 }
+
+/** Create a `require` rooted at the loader entry's own resolution base. */
+export function createRequireForEntry(entry: any): any | undefined {
+  const base = entryBaseUrl(entry)
+  if (!base) return undefined
+  try {
+    let basePath: string
+    if (base instanceof URL) {
+      basePath = fileURLToPath(base)
+    } else if (typeof base === 'string' && /^file:/i.test(base)) {
+      basePath = fileURLToPath(base)
+    } else {
+      basePath = base
+    }
+    const resolverPath = join(basePath, '__dsh_mode_control_resolver__.cjs')
+    return createRequire(resolverPath)
+  } catch {
+    return undefined
+  }
+}
+
+function matchFromEntry(entry: any): ToolSubagentEntryMatch | undefined {
+  if (!entry) return undefined
+  let id = ''
+  try {
+    id = typeof entry?.id === 'string' ? entry.id : (typeof entry?.options?.id === 'string' ? entry.options.id : '')
+  } catch {
+    id = typeof entry?.options?.id === 'string' ? entry.options.id : ''
+  }
+  const options = (entry?.options ?? {}) as { name?: unknown; config?: unknown }
+  const name = typeof options.name === 'string' ? options.name : ''
+  const config = (typeof options.config === 'object' && options.config !== null ? options.config : {}) as Record<string, unknown>
+  const provider = typeof config.provider === 'string' ? config.provider : undefined
+  const toolName = typeof config.toolName === 'string' ? config.toolName : undefined
+
+  const idMatch = id === TOOL_ENTRY_ID || id.endsWith(`:${TOOL_ENTRY_ID}`)
+  if (!idMatch && name !== SUBAGENT_PACKAGE && toolName !== 'subagent' && provider !== 'spawn') return undefined
+  return { entry, id, provider, toolName, baseUrl: entryBaseUrl(entry), packageName: name }
+}
+
+/** Every loader entry that looks like a `tool-subagent` instance. */
+export function findToolSubagentEntries(ctx: HostContext): ToolSubagentEntryMatch[] {
+  const loader = (ctx as any)?.loader
+  if (!loader?.entries) return []
+  const matches: ToolSubagentEntryMatch[] = []
+  for (const entry of loader.entries()) {
+    const match = matchFromEntry(entry)
+    if (match) matches.push(match)
+  }
+  return matches
+}
+
+/**
+ * Deterministic canonical-entry score.
+ *
+ * The canonical `tool-subagent` (plain spawn/subagent tool) must win over
+ * `tool-subagent-fork`, `tool-subagent-codex`, `tool-subagent-claude-code`,
+ * even though every one of those rows shares the same package name.
+ */
+export function canonicalToolSubagentScore(match: ToolSubagentEntryMatch): number {
+  if (match.id === TOOL_ENTRY_ID) return 5
+  if (match.id.endsWith(`:${TOOL_ENTRY_ID}`)) return 4
+  if (match.toolName === 'subagent') return 3
+  if (match.provider === 'spawn') return 2
+  if (match.packageName === SUBAGENT_PACKAGE) return 1
+  return 0
+}
+
+export function isCanonicalToolSubagentMatch(match: ToolSubagentEntryMatch | undefined): boolean {
+  return match !== undefined && canonicalToolSubagentScore(match) >= 2
+}
+
+/** Whether a loader entry is the canonical (non-fork) tool-subagent entry. */
+export function isCanonicalToolSubagentEntry(entry: any): boolean {
+  return isCanonicalToolSubagentMatch(matchFromEntry(entry))
+}
+
+/** Whether a fiber belongs to the canonical tool-subagent loader entry. */
+export function isCanonicalToolSubagentFiber(fiber: any): boolean {
+  const entryKey = Symbol.for('cordis.entry')
+  const entry = fiber?.entry
+    ?? fiber?.parent?.[entryKey]
+    ?? fiber?.parent?.fiber?.[entryKey]
+  return entry !== undefined && isCanonicalToolSubagentEntry(entry)
+}
+
+/**
+ * Select the single deterministic canonical tool-subagent entry.
+ *
+ * Existing `entryOf()` fallbacks were too wide: matching only the package
+ * `name` made `tool-subagent-fork` and `tool-subagent-codex` race with the
+ * ordinary `tool-subagent`. This selection scores explicit id first, then
+ * `toolName === 'subagent'`, then `provider === 'spawn'`, and only falls back
+ * to a package-name match when nothing more specific exists.
+ */
+export function selectCanonicalToolSubagentEntry(ctx: HostContext): ToolSubagentEntryMatch | undefined {
+  let best: ToolSubagentEntryMatch | undefined
+  let bestScore = -1
+  for (const match of findToolSubagentEntries(ctx)) {
+    const score = canonicalToolSubagentScore(match)
+    if (score > bestScore) {
+      best = match
+      bestScore = score
+    }
+  }
+  return best
+}
+
+// ---------------------------------------------------------------------------
+// Schema facts + version resolution
+// ---------------------------------------------------------------------------
 
 function schemaShapeKeys(schema: any): string[] {
   if (!schema || typeof schema !== 'object') return []
@@ -122,8 +278,6 @@ function schemaShapeKeys(schema: any): string[] {
   if (!shape || typeof shape !== 'object') return []
   return Object.keys(shape)
 }
-
-const SUBAGENT_PACKAGE = '@deepseek-ai/dsh-tool-subagent'
 
 export interface SubagentVersionResult {
   version?: string
@@ -192,14 +346,26 @@ export function resolveSubagentVersionFromRequire(
 
 /**
  * Resolve the subagent package version from multiple sources, in priority
- * order: loader entry, loaded module metadata, package export, module path.
+ * order:
+ *
+ * 1. Tool Entry itself has reliable version metadata.
+ * 2. Tool loaded module explicitly exports version.
+ * 3. A `createRequire` rooted at the Tool Entry's own loader base URL
+ *    (the resolution context DSH actually loaded the package from).
+ * 4. The plugin's own `createRequire(import.meta.url)` as a last fallback.
+ *
+ * The plugin's own node_modules tree is deliberately *never* preferred over
+ * the entry's resolution context: in isolated/pnpm/desktop-packaged profiles
+ * the loader can resolve the tool while `dsh-mode-control`'s own import.meta
+ * cannot.
  */
 export function resolveSubagentVersion(
   _ctx: HostContext,
-  foundEntry?: { entry: any } | undefined,
+  foundEntry?: ToolSubagentEntryMatch | { entry: any } | undefined,
   loadedModule?: any,
 ): SubagentVersionResult {
-  const entryVersion = foundEntry?.entry?.options?.version ?? foundEntry?.entry?.version
+  const entry = 'entry' in (foundEntry ?? {}) ? (foundEntry as any)?.entry : foundEntry
+  const entryVersion = entry?.options?.version ?? entry?.version
   if (typeof entryVersion === 'string' && entryVersion !== '') {
     return { version: entryVersion, source: 'loader' }
   }
@@ -209,6 +375,23 @@ export function resolveSubagentVersion(
   if (loadedModule?.default && typeof loadedModule.default.version === 'string' && loadedModule.default.version !== '') {
     return { version: loadedModule.default.version, source: 'module' }
   }
+
+  const entryRequire = createRequireForEntry(entry)
+  if (entryRequire) {
+    const fromEntry = resolveSubagentVersionFromRequire(
+      (id: string) => entryRequire(id),
+      (id: string) => entryRequire.resolve(id),
+    )
+    if (fromEntry.version) {
+      return {
+        version: fromEntry.version,
+        source: fromEntry.source === 'package-export' || fromEntry.source === 'module-path-package'
+          ? 'entry-base-package'
+          : fromEntry.source,
+      }
+    }
+  }
+
   const require = createRequire(import.meta.url)
   return resolveSubagentVersionFromRequire(
     (id: string) => require(id),
@@ -217,17 +400,17 @@ export function resolveSubagentVersion(
 }
 
 async function resolveToolModule(ctx: HostContext): Promise<any | undefined> {
-  const found = entryOf(ctx)
+  const match = selectCanonicalToolSubagentEntry(ctx)
   try {
     const mod = await import('@deepseek-ai/dsh-tool-subagent')
     if (mod?.Config) return mod
   } catch {
     // fall through to loader import
   }
-  if (!found) return undefined
+  if (!match) return undefined
   try {
     const loader = (ctx as any).loader
-    const name = found.entry.options?.name || TOOL_ENTRY_ID
+    const name = match.entry.options?.name || TOOL_ENTRY_ID
     return await loader.import(name)
   } catch {
     return undefined
@@ -236,12 +419,12 @@ async function resolveToolModule(ctx: HostContext): Promise<any | undefined> {
 
 /** Collect the current tool-subagent config facts synchronously where possible. */
 export async function resolveSubagentRuntime(ctx: HostContext): Promise<SubagentRuntimeSnapshot> {
-  const found = entryOf(ctx)
-  const entryConfig = found ? (found.entry.options?.config ?? {}) : {}
+  const match = selectCanonicalToolSubagentEntry(ctx)
+  const entryConfig = match ? (match.entry.options?.config ?? {}) : {}
   const mod = await resolveToolModule(ctx)
   const configSchema = mod?.Config
   const agentOptionsSchema = configSchema?.shape?.agentOptions
-  const version = resolveSubagentVersion(ctx, found, mod)
+  const version = resolveSubagentVersion(ctx, match, mod)
   const providerCapabilities: SubagentProviderSnapshot[] = []
   try {
     const subagents = (ctx as any).get?.('subagents')
@@ -257,7 +440,7 @@ export async function resolveSubagentRuntime(ctx: HostContext): Promise<Subagent
     // subagents seam absent — leave the list empty
   }
   const visible = isSubagentVisible(version.version)
-  const hiddenReason: SubagentHiddenReason | undefined = !found
+  const hiddenReason: SubagentHiddenReason | undefined = !match
     ? 'entry-missing'
     : version.version === undefined
       ? 'version-unknown'
@@ -268,7 +451,11 @@ export async function resolveSubagentRuntime(ctx: HostContext): Promise<Subagent
     effectiveVersion: version.version,
     versionSource: version.source,
     hiddenReason,
-    entryFound: found !== undefined,
+    entryFound: match !== undefined,
+    targetEntryId: match?.id,
+    targetToolName: match?.toolName,
+    targetProvider: match?.provider,
+    targetBaseUrl: match?.baseUrl ? String(match.baseUrl) : undefined,
     toolSubagentSchemaFields: schemaShapeKeys(configSchema),
     agentOptionsSchemaFields: schemaShapeKeys(agentOptionsSchema),
     modelSelectionSettings: typeof entryConfig.modelSelectionSettings === 'boolean'
@@ -289,16 +476,26 @@ function cleanAgentOptions(value: unknown): Record<string, unknown> | undefined 
   return Object.keys(result).length > 0 ? result : undefined
 }
 
-/** Apply a resolved subagent control value to the tool-subagent loader entry. */
+/**
+ * Apply a resolved subagent control value to the canonical tool-subagent
+ * loader entry. The same deterministic selection used for detection is reused
+ * here, so detection and mutation can never target different instances.
+ */
 export async function applySubagentControl(
   ctx: HostContext,
-  value: { agentOptions?: unknown; modelSelectionSettings?: boolean },
+  value: { agentOptions?: unknown; modelSelectionSettings?: boolean; runtime?: { targetEntryId?: string } },
 ): Promise<{ applied: boolean; message?: string }> {
-  const found = entryOf(ctx)
-  if (!found) {
+  const match = selectCanonicalToolSubagentEntry(ctx)
+  if (!match) {
     return { applied: false, message: 'tool-subagent entry not found' }
   }
-  const entry = found.entry
+  const storedTargetId = value?.runtime?.targetEntryId
+  if (storedTargetId && storedTargetId !== match.id) {
+    ;(ctx as any).logger?.warn?.(
+      `[dsh-mode-control] subagent target changed: stored=${storedTargetId} current=${match.id}; using current canonical entry`,
+    )
+  }
+  const entry = match.entry
   const currentConfig: Record<string, unknown> = { ...(entry.options?.config ?? {}) }
   const next = { ...currentConfig }
 
@@ -323,6 +520,21 @@ export async function applySubagentControl(
   }
 }
 
+// Keep registering the same namespace idempotent even when lifecycle retries
+// after a tool-subagent entry is replaced. The key is the host plugin context;
+// the value tracks the settings-service contexts where the namespace is
+// currently mounted, so re-registration after a settings detach is allowed.
+const registeredSettingsByHost = new WeakMap<object, Set<object>>()
+
+function settingsRegistrations(ctx: HostContext): Set<object> {
+  let set = registeredSettingsByHost.get(ctx)
+  if (!set) {
+    set = new Set()
+    registeredSettingsByHost.set(ctx, set)
+  }
+  return set
+}
+
 /**
  * Register the auditable subagent settings namespace when the version gate
  * passes. Below `0.1.1-rc.2` no namespace is created, so the client has
@@ -335,8 +547,8 @@ export async function registerSubagentSettings(
   const snapshot = facts ?? await resolveSubagentRuntime(ctx)
   if (!isSubagentVisible(snapshot.effectiveVersion) || !snapshot.entryFound) return
 
-  const found = entryOf(ctx)
-  const entryConfig = found ? (found.entry.options?.config ?? {}) : {}
+  const match = selectCanonicalToolSubagentEntry(ctx)
+  const entryConfig = match ? (match.entry.options?.config ?? {}) : {}
   const base = {
     runtime: snapshot,
     agentOptions: cleanAgentOptions(entryConfig.agentOptions),
@@ -349,30 +561,41 @@ export async function registerSubagentSettings(
   let lastApplied = JSON.stringify(base)
 
   await ctx.inject(['settings'], (sctx: any) => {
-    const scope = sctx.settings.register(SUBAGENT_NAMESPACE, SubagentControlSchema, {
-      base,
-      validate: (value: unknown) => {
-        // No extra validation: the schema already covers the writable fields.
-        void value
-      },
-    })
-    source = () => scope.get()
-    sctx.effect(() => () => {
-      // On detach, stop applying further changes.
-      source = () => base
-    })
-    scope.watch(() => {
-      const next = source()
-      const nextJson = JSON.stringify(next)
-      if (nextJson === lastApplied) return
-      lastApplied = nextJson
-      const value = (next ?? {}) as { agentOptions?: unknown; modelSelectionSettings?: boolean }
-      void applySubagentControl(ctx, value).then(result => {
-        if (!result.applied && result.message && result.message !== 'no change') {
-          ctx.logger.warn(`[dsh-mode-control] subagent config apply failed: ${result.message}`)
-        }
+    const registrations = settingsRegistrations(ctx)
+    // Already mounted in this host context (possibly under an earlier
+    // settings-service instance that has not detached yet).
+    if (registrations.size > 0 || registrations.has(sctx)) return
+    registrations.add(sctx)
+    try {
+      const scope = sctx.settings.register(SUBAGENT_NAMESPACE, SubagentControlSchema, {
+        base,
+        validate: (value: unknown) => {
+          // No extra validation: the schema already covers the writable fields.
+          void value
+        },
       })
-    })
+      source = () => scope.get()
+      sctx.effect(() => () => {
+        // On detach, stop applying further changes.
+        source = () => base
+        registrations.delete(sctx)
+      })
+      scope.watch(() => {
+        const next = source()
+        const nextJson = JSON.stringify(next)
+        if (nextJson === lastApplied) return
+        lastApplied = nextJson
+        const value = (next ?? {}) as { agentOptions?: unknown; modelSelectionSettings?: boolean; runtime?: { targetEntryId?: string } }
+        void applySubagentControl(ctx, value).then(result => {
+          if (!result.applied && result.message && result.message !== 'no change') {
+            ctx.logger.warn(`[dsh-mode-control] subagent config apply failed: ${result.message}`)
+          }
+        })
+      })
+    } catch (error) {
+      registrations.delete(sctx)
+      throw error
+    }
   })
 }
 
@@ -383,13 +606,30 @@ export interface SubagentRegistrationService {
   register?: (ctx: HostContext, facts?: SubagentRuntimeSnapshot) => Promise<void>
 }
 
+function describeFacts(facts: SubagentRuntimeSnapshot): string {
+  return [
+    `entryFound=${String(facts.entryFound)}`,
+    `targetEntryId=${String(facts.targetEntryId)}`,
+    `entryBaseUrl=${String(facts.targetBaseUrl)}`,
+    `toolName=${String(facts.targetToolName)}`,
+    `provider=${String(facts.targetProvider)}`,
+    `version=${String(facts.effectiveVersion)}`,
+    `versionSource=${String(facts.versionSource)}`,
+    `reason=${String(facts.hiddenReason ?? 'visible')}`,
+  ].join(' ')
+}
+
 /**
  * Start lifecycle-aware subagent registration.
  *
- * - Tries immediately when the tool-subagent entry already exists.
- * - Listens for `loader/entry-init` so a later-appearing tool entry registers
- *   the namespace too.
- * - Idempotent: registration runs at most once per host context lifetime.
+ * - Tries immediately when the canonical tool-subagent entry already exists.
+ * - Listens for `internal/plugin` so a later-appearing tool entry registers
+ *   the namespace too. `internal/plugin` fires after entry options are set
+ *   (the loader binds `fiber.entry` then), unlike `loader/entry-init` which
+ *   fires from the `Entry` constructor before `entry.update()`.
+ * - Listens for `loader/partial-dispose` so a canonical entry that is removed
+ *   or replaced before registration gets another chance.
+ * - Idempotent: registration runs at most once per settings service context.
  * - No polling.
  */
 export function startSubagentSettingsRegistration(
@@ -401,8 +641,11 @@ export function startSubagentSettingsRegistration(
   let retryQueued = false
   const resolveRuntime = service.resolveRuntime ?? resolveSubagentRuntime
   const register = service.register ?? registerSubagentSettings
-  const log = (message: string): void => {
+  const warn = (message: string): void => {
     (ctx as any).logger?.warn?.(`[dsh-mode-control] ${message}`)
+  }
+  const info = (message: string): void => {
+    (ctx as any).logger?.info?.(`[dsh-mode-control] ${message}`)
   }
 
   const tryRegister = async (): Promise<void> => {
@@ -411,14 +654,15 @@ export function startSubagentSettingsRegistration(
     try {
       const facts = await resolveRuntime(ctx)
       if (!isSubagentVisible(facts.effectiveVersion) || !facts.entryFound) {
-        log(`subagent hidden: entryFound=${String(facts.entryFound)} version=${String(facts.effectiveVersion)} source=${String(facts.versionSource)}`)
+        warn(`subagent hidden: ${describeFacts(facts)}`)
         return
       }
-      registered = true
       await register(ctx, facts)
+      registered = true
+      info(`subagent detection: ${describeFacts(facts)} visible=true`)
     } catch (error) {
       registered = false
-      log(`subagent registration failed: ${String(error)}`)
+      warn(`subagent registration failed: ${String(error)}`)
     } finally {
       attempting = false
       if (retryQueued && !registered) {
@@ -432,23 +676,35 @@ export function startSubagentSettingsRegistration(
 
   void tryRegister()
 
-  const isToolEntry = (entry: any): boolean => {
-    const id = entry?.id ?? ''
-    const name = entry?.options?.name ?? ''
-    return id === TOOL_ENTRY_ID || id.endsWith(`:${TOOL_ENTRY_ID}`) || name === '@deepseek-ai/dsh-tool-subagent'
-  }
-
-  const disposeListener = ctx.on?.('loader/entry-init', (entry: any) => {
-    if (registered || !isToolEntry(entry)) return
+  const queueOrRun = (): void => {
     if (attempting) {
       retryQueued = true
       return
     }
     void tryRegister()
-  })
-  if (disposeListener) {
+  }
+
+  const disposePlugin = ctx.on?.('internal/plugin', (fiber: any) => {
+    if (registered || !isCanonicalToolSubagentFiber(fiber)) return
+    queueOrRun()
+  }, { global: true })
+  if (disposePlugin) {
     ctx.effect?.(() => {
-      disposeListener()
-    }, '@deepseek-ai/dsh-llm-pi-ai-capabilities: subagent registration lifecycle')
+      disposePlugin()
+    }, '@deepseek-ai/dsh-llm-pi-ai-capabilities: subagent plugin lifecycle')
+  }
+
+  const disposePartial = ctx.on?.('loader/partial-dispose', (entry: any) => {
+    if (!isCanonicalToolSubagentEntry(entry)) return
+    // A canonical entry was replaced/removed. Registration is idempotent at
+    // the settings layer, so it is safe to retry; if the namespace is still
+    // mounted the real registration is a no-op.
+    registered = false
+    queueOrRun()
+  }, { global: true })
+  if (disposePartial) {
+    ctx.effect?.(() => {
+      disposePartial()
+    }, '@deepseek-ai/dsh-llm-pi-ai-capabilities: subagent partial-dispose lifecycle')
   }
 }

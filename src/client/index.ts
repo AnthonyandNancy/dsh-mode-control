@@ -42,7 +42,7 @@ import { collectEnumOptions, collectRuntimeCapabilities, protocolsForModel, prot
 import { SubagentSettingsCard } from './subagent-ui.ts'
 import { SUBAGENT_MODEL_SELECTION_NAMESPACE, SUBAGENT_NAMESPACE } from '../subagent/constants.ts'
 import { Chip, CompactSelect, DisclosureRow, InlineNumberEditor, Panel, SettingRow, Subsection } from './ui.ts'
-import { buildModelRouteOptions, ModelRoutePicker } from './model-picker.ts'
+import { ModelRoutePicker, buildProviderModelRouteOptions } from './model-picker.ts'
 import { collectOpsForAllProviders } from './save-helpers.ts'
 
 const NS = 'settings.llm-pi-ai-capabilities'
@@ -211,11 +211,12 @@ function injectStyles(): void {
 .dsh-mc-panel-body{min-width:0;display:flex;flex-direction:column;gap:10px}
 .dsh-mc-subsection{min-width:0;display:flex;flex-direction:column;gap:2px;margin-top:8px}
 .dsh-mc-subsection-title{color:var(--dsw-alias-label-secondary);margin:0;font-size:12px;font-weight:600;line-height:18px}
-.dsh-mc-subsection-body{min-width:0;display:flex;flex-direction:column}
+.dsh-mc-subsection + .dsh-mc-subsection{border-top:1px solid var(--dsw-alias-border-l3);padding-top:10px;margin-top:10px}
+.dsh-mc-subsection-body{min-width:0;display:flex;flex-direction:column;padding-left:8px}
 .dsh-mc-subagent-description{margin:-4px 0 0}
 .dsh-mc-section-caption{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
 .dsh-mc-setting-rows{display:flex;flex-direction:column;min-width:0}
-.dsh-mc-setting-row{min-height:40px;padding:4px 0;box-sizing:border-box;display:flex;align-items:center;justify-content:space-between;gap:16px}
+.dsh-mc-setting-row{min-height:36px;padding:4px 0;box-sizing:border-box;display:flex;align-items:center;justify-content:space-between;gap:12px}
 .dsh-mc-setting-label-block{min-width:0;display:flex;flex:1;flex-direction:column;gap:1px}
 .dsh-mc-setting-label{color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px}
 .dsh-mc-setting-description,.dsh-mc-setting-warning{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:17px}
@@ -251,7 +252,7 @@ function injectStyles(): void {
 .dsh-mc-inline-value:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .dsh-mc-inline-input{width:120px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-background);color:var(--dsw-alias-label-primary);border-radius:8px;padding:4px 8px;font-size:13px;line-height:20px;box-sizing:border-box}
 .dsh-mc-disclosure-row{min-width:0;border-bottom:1px solid var(--dsw-alias-border-l2)}
-.dsh-mc-disclosure-trigger{width:100%;min-height:40px;padding:4px 0;border:0;background:transparent;color:var(--dsw-alias-label-primary);cursor:pointer;display:flex;align-items:center;gap:8px;text-align:left;font-size:13px}
+.dsh-mc-disclosure-trigger{width:100%;min-height:36px;padding:4px 0;border:0;background:transparent;color:var(--dsw-alias-label-primary);cursor:pointer;display:flex;align-items:center;gap:8px;text-align:left;font-size:13px}
 .dsh-mc-disclosure-trigger:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}
 .dsh-mc-disclosure-label{min-width:0;flex:1}
 .dsh-mc-disclosure-value{color:var(--dsw-alias-label-secondary);font-size:13px}
@@ -460,10 +461,10 @@ function CapabilitiesSection(props: any): any {
     setSelectedModel(firstModel)
   }
 
-  const changeModelRoute = (route: { provider: string; model: string } | null): void => {
-    if (route === null) return
-    setState(prev => ({ ...prev, selectedProvider: route.provider, saved: undefined }))
-    setSelectedModel(route.model)
+  const changeCurrentModel = (model: string): void => {
+    if (!model) return
+    setSelectedModel(model)
+    setState(prev => ({ ...prev, saved: undefined }))
   }
 
   const markProviderDirty = (provider: string, fields: string[] = []): void => {
@@ -765,16 +766,17 @@ function CapabilitiesSection(props: any): any {
     state.error ? h('div', { className: 'dsh-mc-feedback' }, h('p', { className: 'dsh-mc-error' }, state.error), h('button', { type: 'button', className: 'dsh-mc-link-button', onClick: () => void load(true) }, t('reload'))) : null,
     state.saved ? h('p', { className: 'dsh-mc-saved' }, state.saved) : null,
 
-    providerDraft ? h(Panel, { title: t('providerSettings'), className: 'dsh-mc-provider-panel', caption: h(ModeStatus, { mode: state.dshMode, t }) },
-      h(SettingRow, {
-        label: t('provider'),
-        control: h(CompactSelect, {
+    providerDraft ? h(Panel, {
+        title: t('providerSettings'),
+        className: 'dsh-mc-provider-panel',
+        caption: h(ModeStatus, { mode: state.dshMode, t }),
+        action: h(CompactSelect, {
           value: provider,
           options: providerNames.map(name => ({ value: name, label: name })),
           onChange: changeProvider,
           ariaLabel: t('provider'),
         }),
-      }),
+      },
       h(Subsection, { title: t('defaultCapabilities') },
         h(SettingRow, {
           label: t('inputCapability'),
@@ -877,30 +879,26 @@ function CapabilitiesSection(props: any): any {
         h(Subsection, { title: t('basicCapabilities') },
           h(SettingRow, {
             label: t('currentModel'),
-            description: resolvedSource,
             control: h(ModelRoutePicker, {
-              options: buildModelRouteOptions(providerNames, editableModelsByProvider, { current: { provider, model: activeModel } }),
+              options: buildProviderModelRouteOptions(provider, editableModelsByProvider[provider] ?? [], { current: { provider, model: activeModel } }),
               value: { provider, model: activeModel },
-              onChange: changeModelRoute,
+              onChange: (route: { provider: string; model: string } | null) => { if (route) changeCurrentModel(route.model) },
               ariaLabel: t('currentModel'),
               searchPlaceholder: t('searchModels'),
               searchAriaLabel: t('searchModels'),
               emptyLabel: t('noModels'),
+              singleProvider: true,
             }),
           }),
           h(SettingRow, {
             label: t('inputCapability'),
+            description: `${t('inputEffective')}：${resolvedInput.join(', ')} · ${resolvedSource}`,
             control: h('div', { className: 'dsh-mc-chips' }, MODALITIES.map(modality => h(Chip, {
               key: modality,
               label: modalityLabel(modality),
               active: activeDraft.input.includes(modality),
               onClick: () => updateModelDraft({ input: toggleValue(activeDraft.input, modality) }),
             }))),
-          }),
-          h(SettingRow, {
-            label: t('resolvedInput'),
-            description: resolvedSource,
-            control: h('span', { className: 'dsh-mc-muted' }, resolvedInput.join(', ')),
           }),
           state.runtimeCaps.modelFields.has('contextWindow') ? h(SettingRow, {
             label: t('modelContextWindow'),
@@ -1014,6 +1012,7 @@ const zh: Record<string, string> = {
   'compat.notConfigured': '未配置',
   'compat.configured': '已配置',
   inputCapability: '输入能力',
+  inputEffective: '当前生效',
   defaultReasoning: '默认推理等级',
   inherit: '继承',
   saved: '已保存',
@@ -1049,12 +1048,12 @@ const zh: Record<string, string> = {
   thinkingBudgets: '推理预算',
   defaultContextWindow: '默认上下文窗口',
   defaultMaxTokens: '默认最大输出',
-  modelContextWindow: '上下文窗口覆盖',
-  modelMaxTokens: '最大输出覆盖',
+  modelContextWindow: '上下文窗口',
+  modelMaxTokens: '最大输出',
   reasoningLevels: '推理等级',
-  reasoningWire: '推理等级线值',
+  reasoningWire: 'Wire 映射',
   resolvedCapability: '解析后能力',
-  'subagent.title': '子代理模型',
+  'subagent.title': '子代理',
   'subagent.legacy.description': '固定模型模式：为新子代理实例写入 provider/model/maxTokens。',
   'subagent.native.description': '动态模型选择：使用官方 subagent-model-selection 命名空间。',
   'subagent.status.legacy': '固定模型',
@@ -1162,8 +1161,8 @@ const zh: Record<string, string> = {
   defaultRequestReasoning: '默认请求推理等级',
   defaultReasoningHint: '提供方级请求默认值。它不会声明所有模型都支持该推理等级。',
   defaultReasoningPartialWarning: 'ⓘ 当前 Provider 中部分模型没有声明该默认等级。',
-  dshCurrentReasoning: 'DSH 当前支持',
-  declaredReasoningLevels: '声明推理等级',
+  dshCurrentReasoning: '运行时支持',
+  declaredReasoningLevels: '声明等级',
   reasoningEmptyHint: '请至少选择一个推理等级。',
   reasoningNotDeclared: '未声明',
   reasoningEmptyError: '当前模型处于“自定义推理能力”模式，请至少选择一个推理等级。',
@@ -1205,6 +1204,7 @@ const en: Record<string, string> = {
   'compat.notConfigured': 'Not configured',
   'compat.configured': 'Configured',
   inputCapability: 'Input capability',
+  inputEffective: 'Effective',
   defaultReasoning: 'Default reasoning',
   inherit: 'Inherit',
   saved: 'Saved',
@@ -1240,12 +1240,12 @@ const en: Record<string, string> = {
   thinkingBudgets: 'Thinking budgets',
   defaultContextWindow: 'Default context window',
   defaultMaxTokens: 'Default max output tokens',
-  modelContextWindow: 'Context window override',
-  modelMaxTokens: 'Max output tokens override',
+  modelContextWindow: 'Context window',
+  modelMaxTokens: 'Max output tokens',
   reasoningLevels: 'Reasoning levels',
-  reasoningWire: 'Reasoning wire values',
+  reasoningWire: 'Wire mapping',
   resolvedCapability: 'Resolved capability',
-  'subagent.title': 'Subagent Models',
+  'subagent.title': 'Subagents',
   'subagent.legacy.description': 'Fixed model mode: writes provider/model/maxTokens for new subagent instances.',
   'subagent.native.description': 'Dynamic selection: uses the official subagent-model-selection namespace.',
   'subagent.status.legacy': 'Fixed model',
@@ -1353,8 +1353,8 @@ const en: Record<string, string> = {
   defaultRequestReasoning: 'Default request reasoning',
   defaultReasoningHint: 'Provider-level request default. It does not declare that every model supports this effort.',
   defaultReasoningPartialWarning: 'ⓘ Some models on this provider do not declare the default effort.',
-  dshCurrentReasoning: 'DSH currently supports',
-  declaredReasoningLevels: 'Declared reasoning levels',
+  dshCurrentReasoning: 'Runtime support',
+  declaredReasoningLevels: 'Declared levels',
   reasoningEmptyHint: 'Select at least one reasoning level.',
   reasoningNotDeclared: 'Not declared',
   reasoningEmptyError: 'The current model is in "custom reasoning" mode; select at least one reasoning level.',

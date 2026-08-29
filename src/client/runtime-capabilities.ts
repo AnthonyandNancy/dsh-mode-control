@@ -186,6 +186,13 @@ export interface RuntimeSubagentInput extends SubagentCapabilityInput {
   /** Raw runtime facts from the host service namespace. */
   runtime?: {
     effectiveVersion?: string
+    versionSource?: string
+    hiddenReason?: string
+    targetEntryId?: string
+    targetToolName?: string
+    targetProvider?: string
+    targetBaseUrl?: string
+    entryFound?: boolean
     toolSubagentSchemaFields?: string[]
     agentOptionsSchemaFields?: string[]
     modelSelectionSettings?: boolean
@@ -220,6 +227,27 @@ export function subagentRuntimeFactsFromValue(value: unknown): RuntimeSubagentIn
     runtime: {
       effectiveVersion: typeof runtime['effectiveVersion'] === 'string'
         ? runtime['effectiveVersion'] as string
+        : undefined,
+      versionSource: typeof runtime['versionSource'] === 'string'
+        ? runtime['versionSource'] as string
+        : undefined,
+      hiddenReason: typeof runtime['hiddenReason'] === 'string'
+        ? runtime['hiddenReason'] as string
+        : undefined,
+      targetEntryId: typeof runtime['targetEntryId'] === 'string'
+        ? runtime['targetEntryId'] as string
+        : undefined,
+      targetToolName: typeof runtime['targetToolName'] === 'string'
+        ? runtime['targetToolName'] as string
+        : undefined,
+      targetProvider: typeof runtime['targetProvider'] === 'string'
+        ? runtime['targetProvider'] as string
+        : undefined,
+      targetBaseUrl: typeof runtime['targetBaseUrl'] === 'string'
+        ? runtime['targetBaseUrl'] as string
+        : undefined,
+      entryFound: typeof runtime['entryFound'] === 'boolean'
+        ? runtime['entryFound'] as boolean
         : undefined,
       toolSubagentSchemaFields: Array.isArray(runtime['toolSubagentSchemaFields'])
         ? (runtime['toolSubagentSchemaFields'] as string[])
@@ -268,9 +296,17 @@ export function collectRuntimeCapabilities(
     supportsAgentOptions: subagent.supportsAgentOptions,
     modelSelectionSettings: subagent.modelSelectionSettings ?? runtime?.modelSelectionSettings,
   })
-  const resolvedSubagent: SubagentRuntimeCapabilities = runtime?.providers
-    ? { ...subagentCaps, providers: runtime.providers }
-    : subagentCaps
+  const resolvedSubagent: SubagentRuntimeCapabilities = {
+    ...subagentCaps,
+    ...(runtime?.entryFound !== undefined ? { entryFound: runtime.entryFound } : {}),
+    ...(runtime?.versionSource ? { versionSource: runtime.versionSource } : {}),
+    ...(runtime?.hiddenReason ? { hiddenReason: runtime.hiddenReason } : {}),
+    ...(runtime?.targetEntryId ? { targetEntryId: runtime.targetEntryId } : {}),
+    ...(runtime?.targetToolName ? { targetToolName: runtime.targetToolName } : {}),
+    ...(runtime?.targetProvider ? { targetProvider: runtime.targetProvider } : {}),
+    ...(runtime?.targetBaseUrl ? { targetBaseUrl: runtime.targetBaseUrl } : {}),
+    ...(runtime?.providers ? { providers: runtime.providers } : {}),
+  }
   return {
     compatFields,
     modelCompatFields,

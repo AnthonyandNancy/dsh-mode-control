@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildModelRouteOptions,
+  buildProviderModelRouteOptions,
   computePopupPlacement,
   filterModelRouteOptions,
   modelRouteForEnter,
@@ -106,5 +107,27 @@ describe('popup viewport placement', () => {
   it('never returns a negative max height', () => {
     const placement = computePopupPlacement({ top: 0, bottom: 10 }, 0, 360)
     expect(placement.maxHeight).toBeGreaterThanOrEqual(0)
+  })
+})
+
+describe('provider-scoped model directory', () => {
+  it('builds options for only the selected provider', () => {
+    const options = buildProviderModelRouteOptions('location', ['grok-4.6', 'deepseek-v4-flash'], {
+      providerLabels: { location: 'location' },
+      current: { provider: 'location', model: 'grok-4.6' },
+    })
+    expect(options.map(option => option.provider)).toEqual(['location', 'location'])
+    expect(options.map(option => option.model)).toEqual(['grok-4.6', 'deepseek-v4-flash'])
+  })
+
+  it('never leaks other providers into a provider-scoped directory', () => {
+    const options = buildProviderModelRouteOptions(
+      'location',
+      ['grok-4.6'],
+      { current: { provider: 'location', model: 'grok-4.6' } },
+    )
+    expect(options).toEqual([
+      expect.objectContaining({ provider: 'location', model: 'grok-4.6' }),
+    ])
   })
 })

@@ -32,8 +32,14 @@ export function modelRouteForEnter(options: ModelRouteOption[]): ModelRoute | nu
   return first ? { provider: first.provider, model: first.model } : null
 }
 
-function routeDisplay(option: ModelRouteOption | undefined, value: ModelRoute | null | undefined, fallback: string): string {
+function routeDisplay(
+  option: ModelRouteOption | undefined,
+  value: ModelRoute | null | undefined,
+  fallback: string,
+  compactProvider = false,
+): string {
   if (!value) return fallback
+  if (compactProvider) return option?.modelLabel ?? value.model
   return `${option?.providerLabel ?? value.provider} / ${option?.modelLabel ?? value.model}`
 }
 
@@ -95,6 +101,20 @@ export function buildModelRouteOptions(
     })
   }
   return options
+}
+
+/**
+ * Build a single-provider model directory for the Model Settings picker.
+ *
+ * Model Settings edits only the currently selected provider; unlike the
+ * Subagent picker it must never show models from other providers.
+ */
+export function buildProviderModelRouteOptions(
+  provider: string,
+  models: ModelValue[],
+  config: BuildModelRouteOptionsConfig = {},
+): ModelRouteOption[] {
+  return buildModelRouteOptions([provider], { [provider]: models }, config)
 }
 
 /** Keep persisted routes visible even when the native catalog has gone stale. */
@@ -213,9 +233,10 @@ function PickerOption(props: {
   multiple: boolean
   onSelect: () => void
   itemRef?: (node: HTMLButtonElement | null) => void
+  showProviderDetail?: boolean
 }): any {
   const h = createElement
-  const { option, selected, onSelect, itemRef } = props
+  const { option, selected, onSelect, itemRef, showProviderDetail = true } = props
   const label = `${option.providerLabel ?? option.provider} / ${option.modelLabel ?? option.model}`
   return h('button', {
     ref: itemRef,
@@ -230,7 +251,7 @@ function PickerOption(props: {
   },
     h('span', { className: 'dsh-mc-picker-option-copy' },
       h('span', { className: 'dsh-mc-picker-model' }, option.modelLabel ?? option.model),
-      h('span', { className: 'dsh-mc-picker-detail' }, option.providerLabel ?? option.provider),
+      showProviderDetail ? h('span', { className: 'dsh-mc-picker-detail' }, option.providerLabel ?? option.provider) : null,
     ),
     h('span', { className: 'dsh-mc-picker-check', 'aria-hidden': true }, selected ? h(CheckIcon) : null),
   )
@@ -244,8 +265,12 @@ function ProviderGroups(props: {
   itemRefs: MutableRefObject<Array<HTMLButtonElement | null>>
   itemOffset?: number
   idPrefix: string
+  showGroupTitles?: boolean
+  showProviderDetail?: boolean
 }): any {
   const h = createElement
+  const showGroupTitles = props.showGroupTitles !== false
+  const showProviderDetail = props.showProviderDetail !== false
   const groups: Array<[string, ModelRouteOption[]]> = []
   for (const option of props.options) {
     const existing = groups.find(group => group[0] === option.provider)
@@ -255,8 +280,8 @@ function ProviderGroups(props: {
   let index = 0
   return h('div', { className: 'dsh-mc-picker-groups' }, groups.map(([provider, options], groupIndex) => {
     const titleId = `${props.idPrefix}-provider-${groupIndex}`
-    return h('section', { key: provider, role: 'group', className: 'dsh-mc-picker-group', 'aria-labelledby': titleId },
-      h('div', { id: titleId, className: 'dsh-mc-picker-group-title' }, options[0]?.providerLabel ?? provider),
+    return h('section', { key: provider, role: 'group', className: 'dsh-mc-picker-group', 'aria-labelledby': showGroupTitles ? titleId : undefined },
+      showGroupTitles ? h('div', { id: titleId, className: 'dsh-mc-picker-group-title' }, options[0]?.providerLabel ?? provider) : null,
       options.map(option => {
         const itemIndex = (props.itemOffset ?? 0) + index++
         return h(PickerOption, {
@@ -266,6 +291,7 @@ function ProviderGroups(props: {
           multiple: props.multiple,
           onSelect: () => props.onSelect(option),
           itemRef: (node: HTMLButtonElement | null): void => { props.itemRefs.current[itemIndex] = node },
+          showProviderDetail,
         })
       }),
     )
@@ -316,11 +342,13 @@ export interface ModelRoutePickerProps {
   searchAriaLabel?: string
   emptyLabel?: string
   additionalRoutes?: ModelRoute[]
+  /** Single-provider mode: hide group headers/provider prefixes in the menu. */
+  singleProvider?: boolean
 }
 
 export function ModelRoutePicker(props: ModelRoutePickerProps): any {
   const h = createElement
-  const { options, value, onChange, inheritLabel = 'Inherit main model', placeholder = 'Select model', ariaLabel = placeholder, disabled, allowInherit = false, searchPlaceholder = 'Search models…', searchAriaLabel = 'Search models', emptyLabel = 'No models found', additionalRoutes = [] } = props
+  const { options, value, onChange, inheritLabel = 'Inherit main model', placeholder = 'Select model', ariaLabel = placeholder, disabled, allowInherit = false, searchPlaceholder = 'Search models…', searchAriaLabel = 'Search models', emptyLabel = 'No models found', additionalRoutes = [], singleProvider = false } = props
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
   const openDirectionRef = useRef<-1 | 0 | 1>(0)
@@ -353,7 +381,7 @@ export function ModelRoutePicker(props: ModelRoutePickerProps): any {
     })
   }, [open, optionCount, selectedIndex])
   itemRefs.current = []
-  const display = routeDisplay(selected, value, allowInherit ? inheritLabel : placeholder)
+  const display = routeDisplay(selected, value, allowInherit ? inheritLabel : placeholder, singleProvider)
   const triggerLabel = display
   const select = (route: ModelRoute | null): void => { onChange(route); close('selection') }
   const onKeyDown = (event: KeyboardEvent): void => {
@@ -407,7 +435,7 @@ export function ModelRoutePicker(props: ModelRoutePickerProps): any {
       h('div', { id: `${id}-listbox`, className: 'dsh-mc-picker-listbox', role: 'listbox', 'aria-label': ariaLabel },
         allowInherit ? h('button', { ref: (node: HTMLButtonElement | null): void => { itemRefs.current[0] = node }, type: 'button', role: 'option', 'aria-selected': value == null, tabIndex: -1, 'aria-label': inheritLabel, className: `dsh-mc-picker-option${value == null ? ' dsh-mc-picker-option-selected' : ''}`, 'data-inherit': 'true', onClick: () => select(null) },
           h('span', { className: 'dsh-mc-picker-option-copy' }, h('span', { className: 'dsh-mc-picker-model' }, inheritLabel)), h('span', { className: 'dsh-mc-picker-check', 'aria-hidden': true }, value == null ? h(CheckIcon) : null)) : null,
-        h(ProviderGroups, { options: filtered, selected: new Set(value ? [selectedKey] : []), multiple: false, onSelect: select, itemRefs, itemOffset: allowInherit ? 1 : 0, idPrefix: id }),
+        h(ProviderGroups, { options: filtered, selected: new Set(value ? [selectedKey] : []), multiple: false, onSelect: select, itemRefs, itemOffset: allowInherit ? 1 : 0, idPrefix: id, showGroupTitles: !singleProvider, showProviderDetail: !singleProvider }),
         filtered.length === 0 && !allowInherit ? h('div', { className: 'dsh-mc-picker-empty' }, emptyLabel) : null,
       ),
     ) : null,

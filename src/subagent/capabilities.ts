@@ -29,6 +29,20 @@ export interface SubagentRuntimeCapabilities {
   modelSelectionSettings?: boolean
   /** Registered subagent backends and whether each accepts agentOptions. */
   providers?: Array<{ name: string; supportsAgentOptions: boolean }>
+  /** Host-side diagnostics: whether a canonical tool-subagent entry exists. */
+  entryFound?: boolean
+  /** Host-side diagnostics: which resolver produced the effective version. */
+  versionSource?: string
+  /** Host-side diagnostics: why the subagent surface is hidden. */
+  hiddenReason?: string
+  /** Host-side diagnostics: canonical loader entry id being targeted. */
+  targetEntryId?: string
+  /** Host-side diagnostics: canonical config `toolName`. */
+  targetToolName?: string
+  /** Host-side diagnostics: canonical config `provider`. */
+  targetProvider?: string
+  /** Host-side diagnostics: canonical loader entry base URL. */
+  targetBaseUrl?: string
 }
 
 export interface SubagentCapabilityInput {

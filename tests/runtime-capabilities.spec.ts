@@ -284,3 +284,30 @@ describe('nested subagent runtime facts', () => {
     expect(caps.subagent.providers).toBeUndefined()
   })
 })
+
+  it('preserves host diagnostics fields through the client runtime bridge', () => {
+    const facts = subagentRuntimeFactsFromValue({
+      runtime: {
+        effectiveVersion: '0.1.1-rc.2',
+        entryFound: true,
+        versionSource: 'entry-base-package',
+        hiddenReason: undefined,
+        targetEntryId: 'delegation:tool-subagent',
+        targetToolName: 'subagent',
+        targetProvider: 'spawn',
+        targetBaseUrl: 'file:///profile/',
+      },
+    })
+    expect(facts.runtime?.versionSource).toBe('entry-base-package')
+    expect(facts.runtime?.targetEntryId).toBe('delegation:tool-subagent')
+    expect(facts.runtime?.targetToolName).toBe('subagent')
+    expect(facts.runtime?.targetProvider).toBe('spawn')
+    expect(facts.runtime?.targetBaseUrl).toBe('file:///profile/')
+    const caps = collectRuntimeCapabilities(buildSchema(), undefined, facts)
+    expect(caps.subagent.visible).toBe(true)
+    expect(caps.subagent.versionSource).toBe('entry-base-package')
+    expect(caps.subagent.targetEntryId).toBe('delegation:tool-subagent')
+    expect(caps.subagent.targetToolName).toBe('subagent')
+    expect(caps.subagent.targetProvider).toBe('spawn')
+    expect(caps.subagent.targetBaseUrl).toBe('file:///profile/')
+  })
