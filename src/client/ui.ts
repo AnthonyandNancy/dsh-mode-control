@@ -1,5 +1,8 @@
 import { createElement, useEffect, useId, useRef, useState, type KeyboardEvent, type MutableRefObject } from 'react'
 
+export type UiDepth = 0 | 1 | 2
+export type SettingRowDensity = 'settings' | 'nested'
+
 export function ChevronDownIcon(props: { open?: boolean }): any {
   return createElement('svg', { className: `dsh-mc-icon${props.open ? ' dsh-mc-icon-open' : ''}`, width: 14, height: 14, viewBox: '0 0 14 14', fill: 'none', 'aria-hidden': true },
     createElement('path', { d: 'M3 5.25 7 9l4-3.75', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round' }))
@@ -13,6 +16,12 @@ export function ChevronRightIcon(): any {
 export function CheckIcon(): any {
   return createElement('svg', { className: 'dsh-mc-icon', width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true },
     createElement('path', { d: 'm3.25 8.25 3 3 6.5-6.5', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round' }))
+}
+
+export function InfoIcon(): any {
+  return createElement('svg', { className: 'dsh-mc-info-icon', width: 14, height: 14, viewBox: '0 0 14 14', fill: 'none', 'aria-hidden': true },
+    createElement('circle', { cx: 7, cy: 7, r: 5.5, stroke: 'currentColor', strokeWidth: 1.2 }),
+    createElement('path', { d: 'M7 6.4v3.2M7 4.4v.2', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round' }))
 }
 
 export function Chip(props: any): any {
@@ -33,15 +42,22 @@ export interface SettingRowProps {
   warning?: any
   title?: string
   className?: string
+  depth?: UiDepth
+  density?: SettingRowDensity
 }
 
 export function SettingRow(props: SettingRowProps): any {
   const h = createElement
-  return h('div', { className: `dsh-mc-setting-row${props.className ? ` ${props.className}` : ''}`, title: props.title },
+  const depth = props.depth ?? 0
+  const density = props.density ?? 'settings'
+  return h('div', {
+    className: `dsh-mc-setting-row dsh-mc-setting-row-density-${density} dsh-mc-setting-row-depth-${depth}${props.className ? ` ${props.className}` : ''}`,
+    title: props.title,
+  },
     h('div', { className: 'dsh-mc-setting-label-block' },
       h('span', { className: 'dsh-mc-setting-label-line' },
         h('span', { className: 'dsh-mc-setting-label' }, props.label),
-        props.help ? h('span', { className: 'dsh-mc-setting-help', title: props.help }, 'ⓘ') : null,
+        props.help ? h('span', { className: 'dsh-mc-setting-help', title: props.help }, h(InfoIcon)) : null,
       ),
       props.description ? h('span', { className: 'dsh-mc-setting-description' }, props.description) : null,
       props.warning ? h('span', { className: 'dsh-mc-setting-warning' }, props.warning) : null,
@@ -212,7 +228,7 @@ export function CompactSelect(props: CompactSelectProps): any {
     h('button', {
       ref: triggerRef,
       type: 'button',
-      className: 'dsh-mc-compact-trigger',
+      className: 'dsh-mc-compact-trigger dsh-mc-settings-control',
       'aria-label': compactSelectAccessibleLabel(props.ariaLabel, selected?.label, props.placeholder),
       'aria-haspopup': 'listbox',
       'aria-expanded': open,
@@ -351,12 +367,25 @@ export function Field(props: any): any {
 
 export type DisclosureRowVariant = 'section' | 'group' | 'field'
 
-export function DisclosureRow(props: { summary: string; value?: string; children?: any; defaultOpen?: boolean; title?: string; description?: string; variant?: DisclosureRowVariant; className?: string }): any {
+export interface DisclosureRowProps {
+  summary: string
+  value?: string
+  children?: any
+  defaultOpen?: boolean
+  title?: string
+  description?: string
+  variant?: DisclosureRowVariant
+  depth?: UiDepth
+  className?: string
+}
+
+export function DisclosureRow(props: DisclosureRowProps): any {
   const h = createElement
   const [open, setOpen] = useState(Boolean(props.defaultOpen))
   const variant = props.variant ?? 'section'
+  const depth = props.depth ?? 0
   return h('div', {
-    className: `dsh-mc-disclosure-row dsh-mc-disclosure-row-${variant}${open ? ' dsh-mc-disclosure-row-open' : ''}${props.className ? ` ${props.className}` : ''}`,
+    className: `dsh-mc-disclosure-row dsh-mc-disclosure-row-${variant} dsh-mc-depth-${depth}${open ? ' dsh-mc-disclosure-row-open' : ''}${props.className ? ` ${props.className}` : ''}`,
     title: props.title,
   },
     h('button', {

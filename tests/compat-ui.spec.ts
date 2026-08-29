@@ -140,3 +140,64 @@ describe('compat disclosure hierarchy variants', () => {
     expect(titleElement.props['aria-level']).toBe(5)
   })
 })
+
+describe('compat disclosure depth mapping', () => {
+  const commonBoolean = COMPAT_FIELDS.find(field => field.key === 'supportsStore')!
+  const jsonField = COMPAT_FIELDS.find(field => field.kind === 'json')!
+
+  it('passes depth and fieldDepth onto CompatDisclosure rows', () => {
+    const element = CompatDisclosure({
+      summary: 'Advanced',
+      variant: 'group',
+      depth: 1,
+      fieldDepth: 2,
+      fields: [commonBoolean],
+      drafts: {},
+      applicable: { supportsStore: true },
+      existing: {},
+      level: 'model',
+      t: key => key,
+      onChange: () => undefined,
+    })
+    expect(element.props.depth).toBe(1)
+    expect(element.props.variant).toBe('group')
+    const rows = element.props.children.props.children
+    expect(rows[0].props.depth).toBe(2)
+    expect(rows[0].props.density).toBe('nested')
+  })
+
+  it('keeps Advanced and Anthropic as siblings at depth 1, never depth 2', () => {
+    const make = (summary: string) => CompatDisclosure({
+      summary,
+      variant: 'group',
+      depth: 1,
+      fieldDepth: 2,
+      fields: [commonBoolean],
+      drafts: {},
+      applicable: { supportsStore: true },
+      existing: {},
+      level: 'model',
+      t: key => key,
+      onChange: () => undefined,
+    })
+    const advanced = make('Advanced')
+    const anthropic = make('Anthropic')
+    expect(advanced.props.depth).toBe(1)
+    expect(anthropic.props.depth).toBe(1)
+  })
+
+  it('propagates field depth onto JSON field disclosures', () => {
+    const element = CompatFieldControl({
+      field: jsonField,
+      draft: { kind: 'json', text: '' },
+      applicable: true,
+      existing: false,
+      level: 'model',
+      t: key => key,
+      onChange: () => undefined,
+      depth: 2,
+    })
+    expect(element.type).toBe(DisclosureRow)
+    expect(element.props.depth).toBe(2)
+  })
+})

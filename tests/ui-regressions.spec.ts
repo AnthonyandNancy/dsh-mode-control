@@ -153,3 +153,22 @@ describe('Panel / Subsection hierarchy components', () => {
     expect(labelBlock.props.children[1]).toBeNull()
   })
 })
+
+describe('setting row density and depth classes', () => {
+  it('emits settings and nested density classes with explicit depth', () => {
+    const settings = SettingRow({ label: 'Input', control: 'x', depth: 1 })
+    expect(settings.props.className).toContain('dsh-mc-setting-row-density-settings')
+    expect(settings.props.className).toContain('dsh-mc-setting-row-depth-1')
+
+    const nested = SettingRow({ label: 'Developer role', control: 'x', depth: 2, density: 'nested' })
+    expect(nested.props.className).toContain('dsh-mc-setting-row-density-nested')
+    expect(nested.props.className).toContain('dsh-mc-setting-row-depth-2')
+  })
+
+  it('keeps depth classes distinct for 0, 1 and 2', () => {
+    const classes = [0, 1, 2].map(depth => SettingRow({ label: `d${depth}`, control: 'x', depth: depth as 0 | 1 | 2 }).props.className)
+    expect(classes[0]).toContain('dsh-mc-setting-row-depth-0')
+    expect(classes[1]).toContain('dsh-mc-setting-row-depth-1')
+    expect(classes[2]).toContain('dsh-mc-setting-row-depth-2')
+  })
+})

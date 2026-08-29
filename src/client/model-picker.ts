@@ -414,7 +414,7 @@ export function ModelRoutePicker(props: ModelRoutePickerProps): any {
     h('button', {
       ref: triggerRef,
       type: 'button',
-      className: 'dsh-mc-picker-trigger',
+      className: 'dsh-mc-picker-trigger dsh-mc-settings-control',
       'aria-haspopup': 'listbox',
       'aria-expanded': open,
       'aria-controls': open ? `${id}-listbox` : undefined,
@@ -516,7 +516,7 @@ export function MultiModelPicker(props: MultiModelPickerProps): any {
     h('button', {
       ref: triggerRef,
       type: 'button',
-      className: 'dsh-mc-picker-trigger',
+      className: 'dsh-mc-picker-trigger dsh-mc-settings-control',
       'aria-haspopup': 'listbox',
       'aria-expanded': open,
       'aria-controls': open ? `${id}-listbox` : undefined,

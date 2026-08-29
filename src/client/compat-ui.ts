@@ -1,7 +1,7 @@
 import { createElement } from 'react'
 import type { CompatFieldDefinition } from './compat-fields.ts'
 import type { CompatDraftValue } from './compat-state.ts'
-import { CompactSelect, DisclosureRow, SettingRow, TextArea } from './ui.ts'
+import { CompactSelect, DisclosureRow, SettingRow, TextArea, type SettingRowDensity, type UiDepth } from './ui.ts'
 
 export interface CompatFieldControlProps {
   field: CompatFieldDefinition
@@ -12,6 +12,8 @@ export interface CompatFieldControlProps {
   level: 'provider' | 'model'
   t: (key: string) => string
   onChange: (value: CompatDraftValue) => void
+  depth?: UiDepth
+  density?: SettingRowDensity
 }
 
 function booleanOptions(level: 'provider' | 'model', t: (key: string) => string): Array<{ value: string; label: string }> {
@@ -89,6 +91,8 @@ export function CompatFieldControl(props: CompatFieldControlProps): any {
   const warning = !applicable && existing ? t('compat.notApplicableWarning') : undefined
   const label = t(field.labelKey)
   const description = t(field.descriptionKey)
+  const depth = props.depth ?? 0
+  const density = props.density ?? 'nested'
 
   if (field.kind === 'json') {
     const text = draft.kind === 'json' ? draft.text : ''
@@ -98,6 +102,7 @@ export function CompatFieldControl(props: CompatFieldControlProps): any {
       title: description,
       description,
       variant: 'field',
+      depth,
     }, h('div', { className: 'dsh-mc-json-editor' },
       warning ? h('p', { className: 'dsh-mc-setting-warning' }, warning) : null,
       h(TextArea, {
@@ -107,7 +112,7 @@ export function CompatFieldControl(props: CompatFieldControlProps): any {
         onChange: (next: string) => onChange({ kind: 'json', text: next }),
          disabled: !applicable,
        }),
-       !applicable ? h('button', { type: 'button', className: 'dsh-mc-link-button', onClick: () => onChange({ kind: 'json', text: '' }) }, t('compat.clearOverride')) : null,
+       !applicable ? h('button', { type: 'button', className: 'dsh-mc-button dsh-mc-button-dense', onClick: () => onChange({ kind: 'json', text: '' }) }, t('compat.clearOverride')) : null,
     ))
   }
 
@@ -120,6 +125,8 @@ export function CompatFieldControl(props: CompatFieldControlProps): any {
     help: description,
     description: warning ? description : undefined,
     warning,
+    depth,
+    density,
     control: h('div', { className: 'dsh-mc-compat-control' },
       h(CompactSelect, {
         value,
@@ -132,7 +139,7 @@ export function CompatFieldControl(props: CompatFieldControlProps): any {
         ariaLabel: label,
       }),
       !applicable && existing
-        ? h('button', { type: 'button', className: 'dsh-mc-link-button', onClick: () => onChange(field.kind === 'boolean'
+        ? h('button', { type: 'button', className: 'dsh-mc-button dsh-mc-button-dense', onClick: () => onChange(field.kind === 'boolean'
             ? { kind: 'boolean', mode: 'inherit' }
             : { kind: 'enum', value: '' }) }, t('compat.clearOverride'))
         : null,
@@ -150,15 +157,19 @@ export interface CompatGroupSectionProps {
   level: 'provider' | 'model'
   t: (key: string) => string
   onChange: (key: string, value: CompatDraftValue) => void
+  depth?: UiDepth
+  fieldDepth?: UiDepth
 }
 
 export function CompatGroupSection(props: CompatGroupSectionProps): any {
   const { title, fields, drafts, applicable, existing, enumOptions: enumValues, level, t, onChange } = props
   const h = createElement
+  const depth = props.depth ?? 0
+  const fieldDepth = props.fieldDepth ?? 0
   const visible = fields.filter(field => applicable[field.key] || existing[field.key])
   if (visible.length === 0) return null
-  return h('div', { className: 'dsh-mc-compat-group' },
-    title ? h('div', { className: 'dsh-mc-compat-group-title', role: 'heading', 'aria-level': 5 }, title) : null,
+  return h('div', { className: `dsh-mc-compat-group dsh-mc-depth-${depth}` },
+    title ? h('div', { className: `dsh-mc-compat-group-title dsh-mc-depth-${depth}`, role: 'heading', 'aria-level': 5 }, title) : null,
     visible.map(field => h(CompatFieldControl, {
       key: field.key,
       field,
@@ -169,6 +180,8 @@ export function CompatGroupSection(props: CompatGroupSectionProps): any {
       level,
       t,
       onChange: (value: CompatDraftValue) => onChange(field.key, value),
+      depth: fieldDepth,
+      density: 'nested',
     })),
   )
 }
@@ -181,9 +194,11 @@ export interface CompatDisclosureProps extends CompatGroupSectionProps {
 export function CompatDisclosure(props: CompatDisclosureProps): any {
   const { summary, fields, drafts, applicable, existing, enumOptions: enumValues, level, t, onChange, variant } = props
   const h = createElement
+  const depth = props.depth ?? 0
+  const fieldDepth = props.fieldDepth ?? 0
   const visible = fields.filter(field => applicable[field.key] || existing[field.key])
   if (visible.length === 0) return null
-  return h(DisclosureRow, { summary, variant: variant ?? 'group' },
+  return h(DisclosureRow, { summary, variant: variant ?? 'group', depth },
     h('div', { className: 'dsh-mc-disclosure-fields dsh-mc-compat-group-content' },
       visible.map(field => h(CompatFieldControl, {
         key: field.key,
@@ -195,6 +210,8 @@ export function CompatDisclosure(props: CompatDisclosureProps): any {
         level,
         t,
         onChange: (value: CompatDraftValue) => onChange(field.key, value),
+        depth: fieldDepth,
+        density: 'nested',
       })),
     ),
   )

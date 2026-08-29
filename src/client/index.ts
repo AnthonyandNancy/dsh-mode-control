@@ -42,6 +42,7 @@ import { collectEnumOptions, collectRuntimeCapabilities, protocolsForModel, prot
 import { SubagentSettingsCard } from './subagent-ui.ts'
 import { SUBAGENT_MODEL_SELECTION_NAMESPACE, SUBAGENT_NAMESPACE } from '../subagent/constants.ts'
 import { CheckIcon, Chip, CompactSelect, DisclosureRow, InlineNumberEditor, Panel, SettingRow, Subsection } from './ui.ts'
+import { CAPABILITIES_CSS } from './styles.ts'
 import { ModelRoutePicker, buildProviderModelRouteOptions } from './model-picker.ts'
 import { collectOpsForAllProviders } from './save-helpers.ts'
 
@@ -206,113 +207,10 @@ function compatApplicableMap(
 function injectStyles(): void {
   const id = '@deepseek-ai/dsh-llm-pi-ai-capabilities/styles'
   if (typeof document === 'undefined' || document.querySelector(`style[data-plugin-css="${id}"]`)) return
-  const css = `
-.dsh-mc-root{width:100%;min-width:0;color:var(--dsw-alias-label-primary);flex-direction:column;gap:18px;display:flex;box-sizing:border-box}
-.dsh-mc-title{color:var(--dsw-alias-label-primary);margin:0;font-size:17px;font-weight:600;line-height:24px}
-.dsh-mc-intro{color:var(--dsw-alias-label-tertiary);margin:-10px 0 0;font-size:13px;line-height:20px}
-.dsh-mc-section{min-width:0;display:flex;flex-direction:column;gap:2px}
-.dsh-mc-section-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:0 0 5px;border-bottom:1px solid var(--dsw-alias-border-l2)}
-.dsh-mc-section-title{color:var(--dsw-alias-label-primary);margin:0;font-size:14px;font-weight:600;line-height:22px}
-.dsh-mc-panel{min-width:0;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;padding:10px 12px;background:var(--dsw-alias-background);display:flex;flex-direction:column;gap:10px;box-sizing:border-box}
-.dsh-mc-panel-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0}
-.dsh-mc-panel-title{color:var(--dsw-alias-label-primary);margin:0;font-size:14px;font-weight:600;line-height:20px}
-.dsh-mc-panel-action{flex:none;display:flex;align-items:center}
-.dsh-mc-panel-caption{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;margin:-2px 0 0}
-.dsh-mc-panel-body{min-width:0;display:flex;flex-direction:column;gap:10px}
-.dsh-mc-subsection{min-width:0;display:flex;flex-direction:column;gap:2px;margin-top:8px}
-.dsh-mc-subsection-title{color:var(--dsw-alias-label-secondary);margin:0;padding-left:8px;font-size:12px;font-weight:600;line-height:18px}
-.dsh-mc-subsection + .dsh-mc-subsection{border-top:1px solid var(--dsw-alias-border-l3);padding-top:10px;margin-top:10px}
-.dsh-mc-subsection-body{min-width:0;display:flex;flex-direction:column;padding-left:8px}
-.dsh-mc-subagent-description{margin:-4px 0 0}
-.dsh-mc-section-caption{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
-.dsh-mc-setting-rows{display:flex;flex-direction:column;min-width:0}
-.dsh-mc-setting-row{min-height:36px;padding:4px 0;box-sizing:border-box;display:flex;align-items:center;justify-content:space-between;gap:12px}
-.dsh-mc-setting-label-block{min-width:0;display:flex;flex:1;flex-direction:column;gap:1px}
-.dsh-mc-setting-label-line{min-width:0;display:flex;align-items:center;gap:4px}
-.dsh-mc-setting-label{color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px}
-.dsh-mc-setting-help{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;cursor:help;flex:none}
-.dsh-mc-setting-description,.dsh-mc-setting-warning{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:17px}
-.dsh-mc-setting-warning{color:var(--dsw-alias-state-warn-label)}
-.dsh-mc-setting-control{flex:none;display:flex;align-items:center;justify-content:flex-end;min-width:0}
-.dsh-mc-muted{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;margin:4px 0}
-.dsh-mc-error{color:var(--dsw-alias-danger-default);font-size:13px;line-height:18px;margin:0}.dsh-mc-feedback{display:flex;align-items:center;gap:8px}
-.dsh-mc-empty{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:18px}
-.dsh-mc-chips{flex-wrap:wrap;gap:6px;display:flex;justify-content:flex-end}
-.dsh-mc-chip{border:1px solid var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-secondary);border-radius:999px;padding:3px 10px;font-size:13px;cursor:pointer}
-.dsh-mc-chip:hover{background:var(--dsw-alias-interactive-bg-hover)}
-.dsh-mc-chip-active{border-color:var(--dsw-alias-primary-default);color:var(--dsw-alias-primary-default);font-weight:500}
-.dsh-mc-input,.dsh-mc-textarea{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-background);color:var(--dsw-alias-label-primary);border-radius:8px;padding:7px 10px;font-size:13px;line-height:18px;box-sizing:border-box}
-.dsh-mc-textarea{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;resize:vertical;min-height:80px;max-height:160px;width:100%;overflow:auto}
-.dsh-mc-input:focus,.dsh-mc-textarea:focus,.dsh-mc-inline-input:focus{outline:none;border-color:var(--dsw-alias-border-l3)}
-.dsh-mc-button{border:1px solid var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-primary);border-radius:8px;padding:6px 12px;font-size:13px;cursor:pointer}
-.dsh-mc-button:hover{background:var(--dsw-alias-interactive-bg-hover)}
-.dsh-mc-button-secondary{align-self:flex-start;margin-top:6px}
-.dsh-mc-link-button{background:none;border:none;color:var(--dsw-alias-primary-default);font-size:13px;cursor:pointer;padding:0}
-.dsh-mc-icon{display:block;flex:none;color:currentColor}
-.dsh-mc-icon-open{transform:rotate(180deg)}
-.dsh-mc-compact-select{position:relative;min-width:0}
-.dsh-mc-compact-trigger,.dsh-mc-picker-trigger{min-width:0;max-width:280px;height:28px;color:var(--dsw-alias-label-secondary);cursor:pointer;background:transparent;border:none;border-radius:24px;outline:none;align-items:center;gap:4px;padding:0 4px 0 8px;font-size:13px;font-weight:500;line-height:20px;display:flex}
-.dsh-mc-compact-trigger:hover,.dsh-mc-picker-trigger:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
-.dsh-mc-compact-trigger:focus-visible,.dsh-mc-picker-trigger:focus-visible{box-shadow:0 0 0 2px var(--dsw-alias-border-l3)}
-.dsh-mc-compact-trigger-label,.dsh-mc-picker-trigger-label{white-space:nowrap;text-overflow:ellipsis;overflow:hidden;min-width:0}
-.dsh-mc-compact-menu,.dsh-mc-picker-menu{z-index:20;border:1px solid var(--dsw-alias-border-inverted);background:var(--dsw-specific-menu);min-width:min(240px,calc(100vw - 32px));max-width:min(420px,calc(100vw - 32px));max-height:min(360px,calc(100vh - 96px));box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-primary);border-radius:12px;padding:4px;display:flex;flex-direction:column;position:absolute;top:calc(100% + 8px);right:0;overflow:hidden;box-sizing:border-box}
-.dsh-mc-compact-option{width:100%;min-height:38px;padding:6px 8px;border:0;border-radius:10px;background:transparent;color:var(--dsw-alias-label-primary);font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;text-align:left}
-.dsh-mc-compact-option:hover,.dsh-mc-picker-option:hover{background:var(--dsw-alias-interactive-bg-hover)}
-.dsh-mc-compact-check,.dsh-mc-picker-check{flex:0 0 16px;width:16px;height:16px;color:var(--dsw-alias-label-secondary);display:flex;align-items:center;justify-content:center}
-.dsh-mc-inline-value{max-width:220px;min-width:44px;border:0;background:transparent;color:var(--dsw-alias-label-secondary);border-radius:24px;padding:4px 8px;font-size:13px;line-height:20px;cursor:pointer;text-align:right}
-.dsh-mc-inline-value:hover{background:var(--dsw-alias-interactive-bg-hover)}
-.dsh-mc-inline-input{width:120px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-background);color:var(--dsw-alias-label-primary);border-radius:8px;padding:4px 8px;font-size:13px;line-height:20px;box-sizing:border-box}
-.dsh-mc-disclosure-row{min-width:0;border-bottom:1px solid var(--dsw-alias-border-l2)}
-.dsh-mc-disclosure-trigger{width:100%;min-height:36px;padding:4px 0;border:0;background:transparent;color:var(--dsw-alias-label-primary);cursor:pointer;display:flex;align-items:center;gap:8px;text-align:left;font-size:13px}
-.dsh-mc-disclosure-trigger:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}
-.dsh-mc-disclosure-label{min-width:0;flex:1}
-.dsh-mc-disclosure-value{color:var(--dsw-alias-label-secondary);font-size:13px}
-.dsh-mc-disclosure-chevron{color:var(--dsw-alias-label-caption);display:flex}
-.dsh-mc-disclosure-content{padding:2px 0 8px;display:flex;flex-direction:column;gap:2px}
-.dsh-mc-disclosure-fields,.dsh-mc-compat-group{display:flex;flex-direction:column;min-width:0}
-.dsh-mc-compat-group-title{color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:600;line-height:18px;margin:0;padding:2px 0 4px}
-.dsh-mc-disclosure-row-variant-section .dsh-mc-disclosure-trigger{font-size:13px;font-weight:500;color:var(--dsw-alias-label-primary)}
-.dsh-mc-disclosure-row-variant-section .dsh-mc-disclosure-value{color:var(--dsw-alias-label-secondary)}
-.dsh-mc-disclosure-row-variant-group{border-bottom-color:var(--dsw-alias-border-l3)}
-.dsh-mc-disclosure-row-variant-group .dsh-mc-disclosure-trigger{font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary);min-height:32px;padding-left:4px}
-.dsh-mc-disclosure-row-variant-group .dsh-mc-disclosure-value{color:var(--dsw-alias-label-tertiary);font-size:12px}
-.dsh-mc-disclosure-row-variant-group .dsh-mc-disclosure-content{margin-left:4px;padding-left:10px;border-left:1px solid var(--dsw-alias-border-l3)}
-.dsh-mc-disclosure-row-variant-field .dsh-mc-disclosure-trigger{font-size:13px;font-weight:400;color:var(--dsw-alias-label-primary)}
-.dsh-mc-disclosure-row-variant-field .dsh-mc-disclosure-content{padding-left:0}
-.dsh-mc-json-editor{width:100%;display:flex;flex-direction:column;gap:4px}
-.dsh-mc-compat-control{display:flex;align-items:center;gap:6px;min-width:0}
-.dsh-mc-picker-root{position:relative;min-width:0}
-.dsh-mc-picker-menu{top:calc(100% + 8px)}
-.dsh-mc-picker-menu-up{top:auto;bottom:calc(100% + 8px)}
-.dsh-mc-picker-search{width:100%;height:30px;margin-bottom:4px;box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-background);color:var(--dsw-alias-label-primary);border-radius:8px;padding:4px 8px;font-size:13px;line-height:20px}
-.dsh-mc-picker-listbox{min-width:0;min-height:0;display:flex;flex:1;overflow:hidden}.dsh-mc-picker-groups{min-width:0;min-height:0;flex:1;overflow:auto}
-.dsh-mc-picker-group{padding:0 0 4px}
-.dsh-mc-picker-group-title{position:sticky;top:0;z-index:1;padding:6px 8px 4px;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;background:var(--dsw-specific-menu)}
-.dsh-mc-picker-option{box-sizing:border-box;width:100%;min-height:38px;padding:6px 8px;border:0;border-radius:10px;background:transparent;color:var(--dsw-alias-label-primary);font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;text-align:left}
-.dsh-mc-picker-option-copy{min-width:0;flex:1;display:flex;flex-direction:column;gap:1px}
-.dsh-mc-picker-model{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.dsh-mc-picker-detail{color:var(--dsw-alias-label-tertiary);font-size:12px}
-.dsh-mc-picker-empty{color:var(--dsw-alias-label-tertiary);padding:10px 8px;font-size:13px}
- .dsh-mc-mode{margin:0;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;font-weight:400}
- .dsh-mc-mode-native{color:var(--dsw-alias-success-default)}
- .dsh-mc-mode-legacy{color:var(--dsw-alias-state-warn-label)}
- .dsh-mc-action-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:6px}
-.dsh-mc-action-feedback{min-height:20px;flex:1;display:flex;align-items:center}
-.dsh-mc-action-buttons{display:flex;gap:8px;flex:none}
-.dsh-mc-save-feedback{display:inline-flex;align-items:center;gap:6px;font-size:13px;line-height:20px}
-.dsh-mc-save-feedback-saving{color:var(--dsw-alias-label-secondary)}
-.dsh-mc-save-feedback-success{color:var(--dsw-alias-success-default)}
-.dsh-mc-save-feedback-pending{color:var(--dsw-alias-state-warn-label)}
-.dsh-mc-save-feedback-error{color:var(--dsw-alias-danger-default)}
-.dsh-mc-save-icon{display:flex}
-.dsh-mc-button:disabled{opacity:.55;cursor:default}
-.dsh-mc-button:disabled:hover{background:transparent}
-@media (max-width:520px){.dsh-mc-setting-row{align-items:flex-start;gap:8px}.dsh-mc-setting-label-block{padding-top:4px}.dsh-mc-compact-trigger,.dsh-mc-picker-trigger{max-width:200px}.dsh-mc-chips{justify-content:flex-start}.dsh-mc-action-row{flex-wrap:wrap}.dsh-mc-action-buttons{margin-left:auto}}
-`
   const tag = document.createElement('style')
   tag.dataset.plugin = '@deepseek-ai/dsh-llm-pi-ai-capabilities'
   tag.dataset.pluginCss = id
-  tag.textContent = css
+  tag.textContent = CAPABILITIES_CSS
   document.head.appendChild(tag)
 }
 
@@ -703,7 +601,7 @@ function CapabilitiesSection(props: any): any {
   if (state.status === 'error') {
     return h('div', { className: 'dsh-mc-root' },
       h('p', { className: 'dsh-mc-error' }, `${t('loadFailed')}: ${state.error ?? ''}`),
-      h('button', { type: 'button', className: 'dsh-mc-button', onClick: () => void load() }, t('retry')),
+      h('button', { type: 'button', className: 'dsh-mc-button dsh-mc-button-secondary', onClick: () => void load() }, t('retry')),
     )
   }
   if (!state.writable) {
@@ -869,6 +767,7 @@ function CapabilitiesSection(props: any): any {
           h('div', { className: 'dsh-mc-setting-rows' }, ['minimal', 'low', 'medium', 'high'].map(level => h(SettingRow, {
             key: level,
             label: levelLabel(level),
+            density: 'nested',
             control: h(InlineNumberEditor, {
               value: providerDraft.thinkingBudgets?.[level] ?? '',
               onChange: (value: string) => {
@@ -893,14 +792,16 @@ function CapabilitiesSection(props: any): any {
           level: 'provider',
           t,
           onChange: updateProviderCompat,
+          depth: 0,
+          fieldDepth: 1,
         }),
         h(CompatDisclosure, {
-          summary: t('advancedCompatibility'), variant: 'group', fields: providerAdvanced, drafts: providerCompat,
+          summary: t('advancedCompatibility'), variant: 'group', depth: 1, fieldDepth: 2, fields: providerAdvanced, drafts: providerCompat,
           applicable: providerAdvancedMap.applicable, existing: providerAdvancedMap.existing,
           enumOptions: state.enumOptions, level: 'provider', t, onChange: updateProviderCompat,
         }),
         h(CompatDisclosure, {
-          summary: t('anthropicCompatibility'), variant: 'group', fields: providerAnthropic, drafts: providerCompat,
+          summary: t('anthropicCompatibility'), variant: 'group', depth: 1, fieldDepth: 2, fields: providerAnthropic, drafts: providerCompat,
           applicable: providerAnthropicMap.applicable, existing: providerAnthropicMap.existing,
           enumOptions: state.enumOptions, level: 'provider', t, onChange: updateProviderCompat,
         }),
@@ -920,7 +821,7 @@ function CapabilitiesSection(props: any): any {
       : activeDraft ? h(Panel, {
           title: t('modelSettings'),
           className: 'dsh-mc-model-panel',
-          action: h('button', { type: 'button', className: 'dsh-mc-link-button', onClick: resetModel }, t('resetModel')),
+          action: h('button', { type: 'button', className: 'dsh-mc-button dsh-mc-button-dense', onClick: resetModel }, t('resetModel')),
         },
         h(Subsection, { title: t('basicCapabilities') },
           h(SettingRow, {
@@ -979,6 +880,7 @@ function CapabilitiesSection(props: any): any {
           h('div', { className: 'dsh-mc-setting-rows dsh-mc-reasoning-levels' },
             h(SettingRow, {
               label: t('declaredReasoningLevels'),
+              density: 'nested',
               control: h('div', { className: 'dsh-mc-chips' }, LEVELS.map(level => h(Chip, {
                 key: level, label: levelLabel(level), active: activeDraft.efforts.includes(level), onClick: () => toggleReasoningLevel(level),
               }))),
@@ -988,6 +890,7 @@ function CapabilitiesSection(props: any): any {
             h('div', { className: 'dsh-mc-setting-rows' }, activeDraft.efforts.map(level => h(SettingRow, {
               key: level,
               label: levelLabel(level),
+              density: 'nested',
               control: h('input', {
                 className: 'dsh-mc-inline-input',
                 value: reasoningWireFor(activeDraft, level as PiAiReasoningLevel, modelAnthropic) ?? '',
@@ -1003,20 +906,22 @@ function CapabilitiesSection(props: any): any {
             control: h('span', { className: 'dsh-mc-muted' }, mismatch.missing.map(levelLabel).join(' · ')),
           }) : null,
         ),
-        h(DisclosureRow, { summary: t('modelCompatDisclosure'), variant: 'section' },
+        h(DisclosureRow, { summary: t('modelCompatDisclosure'), variant: 'section', depth: 0 },
           h('div', { className: 'dsh-mc-disclosure-fields' },
             h(CompatGroupSection, {
               fields: modelCompatFields.filter(field => field.group === 'common'), drafts: activeCompatDrafts,
               applicable: modelCompatMap.applicable, existing: modelCompatMap.existing,
               enumOptions: state.enumOptions, level: 'model', t, onChange: updateModelCompat,
+              depth: 0,
+              fieldDepth: 1,
             }),
             h(CompatDisclosure, {
-              summary: t('advancedCompatibility'), variant: 'group', fields: modelCompatFields.filter(field => field.group === 'advanced'), drafts: activeCompatDrafts,
+              summary: t('advancedCompatibility'), variant: 'group', depth: 1, fieldDepth: 2, fields: modelCompatFields.filter(field => field.group === 'advanced'), drafts: activeCompatDrafts,
               applicable: modelCompatMap.applicable, existing: modelCompatMap.existing,
               enumOptions: state.enumOptions, level: 'model', t, onChange: updateModelCompat,
             }),
             h(CompatDisclosure, {
-              summary: t('anthropicCompatibility'), variant: 'group', fields: modelCompatFields.filter(field => field.group === 'anthropic'), drafts: activeCompatDrafts,
+              summary: t('anthropicCompatibility'), variant: 'group', depth: 1, fieldDepth: 2, fields: modelCompatFields.filter(field => field.group === 'anthropic'), drafts: activeCompatDrafts,
               applicable: modelCompatMap.applicable, existing: modelCompatMap.existing,
               enumOptions: state.enumOptions, level: 'model', t, onChange: updateModelCompat,
             }),
@@ -1034,10 +939,10 @@ function CapabilitiesSection(props: any): any {
           : null,
       ),
       h('div', { className: 'dsh-mc-action-buttons' },
-        h('button', { type: 'button', className: 'dsh-mc-button', onClick: resetProvider }, t('resetProvider')),
+        h('button', { type: 'button', className: 'dsh-mc-button dsh-mc-button-secondary', onClick: resetProvider }, t('resetProvider')),
         h('button', {
           type: 'button',
-          className: 'dsh-mc-button',
+          className: 'dsh-mc-button dsh-mc-button-primary',
           onClick: save,
           disabled: saveButtonDisabled(dirtyProvidersRef.current.size > 0, saveFeedback.phase),
           'aria-busy': saveFeedback.phase === 'saving',
