@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { commitOnce, compactSelectAccessibleLabel, openingOptionIndex, Panel, popupCloseRestoresFocus, shouldCloseTriggerOnKey, Subsection } from '../src/client/ui.ts'
+import { commitOnce, compactSelectAccessibleLabel, openingOptionIndex, Panel, popupCloseRestoresFocus, SettingRow, shouldCloseTriggerOnKey, Subsection } from '../src/client/ui.ts'
 import { emptyCompatDrafts } from '../src/client/compat-state.ts'
 import { collectOpsForAllProviders } from '../src/client/save-helpers.ts'
 import { collectOpsForProvider, type ModelDraft, type ProviderDraft } from '../src/client/ops.ts'
@@ -128,5 +128,28 @@ describe('Panel / Subsection hierarchy components', () => {
   it('exports lightweight panel and subsection renderers', () => {
     expect(typeof Panel).toBe('function')
     expect(typeof Subsection).toBe('function')
+  })
+
+  it('keeps L2/L3 heading semantics (h3 panel, h4 subsection)', () => {
+    const panel = Panel({ title: 'Provider' })
+    const panelBody = panel.props.children
+    expect(panel.type).toBe('section')
+    expect(panelBody[0].props.children[0].type).toBe('h3')
+    expect(panelBody[0].props.children[0].props.className).toContain('dsh-mc-panel-title')
+
+    const subsection = Subsection({ title: 'Defaults' })
+    expect(subsection.type).toBe('div')
+    expect(subsection.props.children[0].type).toBe('h4')
+    expect(subsection.props.children[0].props.className).toContain('dsh-mc-subsection-title')
+  })
+
+  it('renders SettingRow help as a tooltip icon without inline description', () => {
+    const row = SettingRow({ label: 'Field', help: 'Help text', control: 'x' })
+    const labelBlock = row.props.children[0]
+    const labelLine = labelBlock.props.children[0]
+    expect(labelLine.props.children[0].props.className).toContain('dsh-mc-setting-label')
+    expect(labelLine.props.children[1].props.className).toContain('dsh-mc-setting-help')
+    expect(labelLine.props.children[1].props.title).toBe('Help text')
+    expect(labelBlock.props.children[1]).toBeNull()
   })
 })

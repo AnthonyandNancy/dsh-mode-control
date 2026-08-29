@@ -28,6 +28,7 @@ export function Chip(props: any): any {
 export interface SettingRowProps {
   label: string
   description?: string
+  help?: string
   control: any
   warning?: any
   title?: string
@@ -38,7 +39,10 @@ export function SettingRow(props: SettingRowProps): any {
   const h = createElement
   return h('div', { className: `dsh-mc-setting-row${props.className ? ` ${props.className}` : ''}`, title: props.title },
     h('div', { className: 'dsh-mc-setting-label-block' },
-      h('span', { className: 'dsh-mc-setting-label' }, props.label),
+      h('span', { className: 'dsh-mc-setting-label-line' },
+        h('span', { className: 'dsh-mc-setting-label' }, props.label),
+        props.help ? h('span', { className: 'dsh-mc-setting-help', title: props.help }, 'ⓘ') : null,
+      ),
       props.description ? h('span', { className: 'dsh-mc-setting-description' }, props.description) : null,
       props.warning ? h('span', { className: 'dsh-mc-setting-warning' }, props.warning) : null,
     ),
@@ -345,10 +349,16 @@ export function Field(props: any): any {
   )
 }
 
-export function DisclosureRow(props: { summary: string; value?: string; children?: any; defaultOpen?: boolean; title?: string; description?: string }): any {
+export type DisclosureRowVariant = 'section' | 'group' | 'field'
+
+export function DisclosureRow(props: { summary: string; value?: string; children?: any; defaultOpen?: boolean; title?: string; description?: string; variant?: DisclosureRowVariant; className?: string }): any {
   const h = createElement
   const [open, setOpen] = useState(Boolean(props.defaultOpen))
-  return h('div', { className: `dsh-mc-disclosure-row${open ? ' dsh-mc-disclosure-row-open' : ''}`, title: props.title },
+  const variant = props.variant ?? 'section'
+  return h('div', {
+    className: `dsh-mc-disclosure-row dsh-mc-disclosure-row-${variant}${open ? ' dsh-mc-disclosure-row-open' : ''}${props.className ? ` ${props.className}` : ''}`,
+    title: props.title,
+  },
     h('button', {
       type: 'button',
       className: 'dsh-mc-disclosure-trigger',

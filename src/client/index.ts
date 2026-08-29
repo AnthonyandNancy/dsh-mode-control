@@ -41,7 +41,7 @@ import { CompatDisclosure, CompatGroupSection } from './compat-ui.ts'
 import { collectEnumOptions, collectRuntimeCapabilities, protocolsForModel, protocolsForProvider, schemaObjectKeys, subagentRuntimeFactsFromValue, type RuntimeCapabilities } from './runtime-capabilities.ts'
 import { SubagentSettingsCard } from './subagent-ui.ts'
 import { SUBAGENT_MODEL_SELECTION_NAMESPACE, SUBAGENT_NAMESPACE } from '../subagent/constants.ts'
-import { Chip, CompactSelect, DisclosureRow, InlineNumberEditor, Panel, SettingRow, Subsection } from './ui.ts'
+import { CheckIcon, Chip, CompactSelect, DisclosureRow, InlineNumberEditor, Panel, SettingRow, Subsection } from './ui.ts'
 import { ModelRoutePicker, buildProviderModelRouteOptions } from './model-picker.ts'
 import { collectOpsForAllProviders } from './save-helpers.ts'
 
@@ -75,7 +75,17 @@ interface CapabilitiesState {
   nativeSubagent: NativeSubagentState
   enumOptions: { maxTokensField: string[]; thinkingFormat: string[]; cacheControlFormat: string[] }
   error?: string
-  saved?: string
+}
+
+export type SavePhase = 'idle' | 'saving' | 'success' | 'pending' | 'error'
+
+export interface SaveFeedbackState {
+  phase: SavePhase
+  message?: string
+}
+
+export function saveButtonDisabled(hasDirty: boolean, phase: SavePhase): boolean {
+  return !hasDirty || phase === 'saving'
 }
 
 const EMPTY_RUNTIME_CAPS: RuntimeCapabilities = {
@@ -210,7 +220,7 @@ function injectStyles(): void {
 .dsh-mc-panel-caption{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;margin:-2px 0 0}
 .dsh-mc-panel-body{min-width:0;display:flex;flex-direction:column;gap:10px}
 .dsh-mc-subsection{min-width:0;display:flex;flex-direction:column;gap:2px;margin-top:8px}
-.dsh-mc-subsection-title{color:var(--dsw-alias-label-secondary);margin:0;font-size:12px;font-weight:600;line-height:18px}
+.dsh-mc-subsection-title{color:var(--dsw-alias-label-secondary);margin:0;padding-left:8px;font-size:12px;font-weight:600;line-height:18px}
 .dsh-mc-subsection + .dsh-mc-subsection{border-top:1px solid var(--dsw-alias-border-l3);padding-top:10px;margin-top:10px}
 .dsh-mc-subsection-body{min-width:0;display:flex;flex-direction:column;padding-left:8px}
 .dsh-mc-subagent-description{margin:-4px 0 0}
@@ -218,13 +228,14 @@ function injectStyles(): void {
 .dsh-mc-setting-rows{display:flex;flex-direction:column;min-width:0}
 .dsh-mc-setting-row{min-height:36px;padding:4px 0;box-sizing:border-box;display:flex;align-items:center;justify-content:space-between;gap:12px}
 .dsh-mc-setting-label-block{min-width:0;display:flex;flex:1;flex-direction:column;gap:1px}
+.dsh-mc-setting-label-line{min-width:0;display:flex;align-items:center;gap:4px}
 .dsh-mc-setting-label{color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px}
+.dsh-mc-setting-help{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;cursor:help;flex:none}
 .dsh-mc-setting-description,.dsh-mc-setting-warning{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:17px}
 .dsh-mc-setting-warning{color:var(--dsw-alias-state-warn-label)}
 .dsh-mc-setting-control{flex:none;display:flex;align-items:center;justify-content:flex-end;min-width:0}
 .dsh-mc-muted{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;margin:4px 0}
 .dsh-mc-error{color:var(--dsw-alias-danger-default);font-size:13px;line-height:18px;margin:0}.dsh-mc-feedback{display:flex;align-items:center;gap:8px}
-.dsh-mc-saved{color:var(--dsw-alias-success-default);font-size:13px;line-height:18px;margin:0}
 .dsh-mc-empty{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:18px}
 .dsh-mc-chips{flex-wrap:wrap;gap:6px;display:flex;justify-content:flex-end}
 .dsh-mc-chip{border:1px solid var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-secondary);border-radius:999px;padding:3px 10px;font-size:13px;cursor:pointer}
@@ -259,6 +270,15 @@ function injectStyles(): void {
 .dsh-mc-disclosure-chevron{color:var(--dsw-alias-label-caption);display:flex}
 .dsh-mc-disclosure-content{padding:2px 0 8px;display:flex;flex-direction:column;gap:2px}
 .dsh-mc-disclosure-fields,.dsh-mc-compat-group{display:flex;flex-direction:column;min-width:0}
+.dsh-mc-compat-group-title{color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:600;line-height:18px;margin:0;padding:2px 0 4px}
+.dsh-mc-disclosure-row-variant-section .dsh-mc-disclosure-trigger{font-size:13px;font-weight:500;color:var(--dsw-alias-label-primary)}
+.dsh-mc-disclosure-row-variant-section .dsh-mc-disclosure-value{color:var(--dsw-alias-label-secondary)}
+.dsh-mc-disclosure-row-variant-group{border-bottom-color:var(--dsw-alias-border-l3)}
+.dsh-mc-disclosure-row-variant-group .dsh-mc-disclosure-trigger{font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary);min-height:32px;padding-left:4px}
+.dsh-mc-disclosure-row-variant-group .dsh-mc-disclosure-value{color:var(--dsw-alias-label-tertiary);font-size:12px}
+.dsh-mc-disclosure-row-variant-group .dsh-mc-disclosure-content{margin-left:4px;padding-left:10px;border-left:1px solid var(--dsw-alias-border-l3)}
+.dsh-mc-disclosure-row-variant-field .dsh-mc-disclosure-trigger{font-size:13px;font-weight:400;color:var(--dsw-alias-label-primary)}
+.dsh-mc-disclosure-row-variant-field .dsh-mc-disclosure-content{padding-left:0}
 .dsh-mc-json-editor{width:100%;display:flex;flex-direction:column;gap:4px}
 .dsh-mc-compat-control{display:flex;align-items:center;gap:6px;min-width:0}
 .dsh-mc-picker-root{position:relative;min-width:0}
@@ -276,8 +296,18 @@ function injectStyles(): void {
  .dsh-mc-mode{margin:0;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;font-weight:400}
  .dsh-mc-mode-native{color:var(--dsw-alias-success-default)}
  .dsh-mc-mode-legacy{color:var(--dsw-alias-state-warn-label)}
- .dsh-mc-action-row{display:flex;align-items:center;gap:8px;margin-top:6px}
-@media (max-width:520px){.dsh-mc-setting-row{align-items:flex-start;gap:8px}.dsh-mc-setting-label-block{padding-top:4px}.dsh-mc-compact-trigger,.dsh-mc-picker-trigger{max-width:200px}.dsh-mc-chips{justify-content:flex-start}}
+ .dsh-mc-action-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:6px}
+.dsh-mc-action-feedback{min-height:20px;flex:1;display:flex;align-items:center}
+.dsh-mc-action-buttons{display:flex;gap:8px;flex:none}
+.dsh-mc-save-feedback{display:inline-flex;align-items:center;gap:6px;font-size:13px;line-height:20px}
+.dsh-mc-save-feedback-saving{color:var(--dsw-alias-label-secondary)}
+.dsh-mc-save-feedback-success{color:var(--dsw-alias-success-default)}
+.dsh-mc-save-feedback-pending{color:var(--dsw-alias-state-warn-label)}
+.dsh-mc-save-feedback-error{color:var(--dsw-alias-danger-default)}
+.dsh-mc-save-icon{display:flex}
+.dsh-mc-button:disabled{opacity:.55;cursor:default}
+.dsh-mc-button:disabled:hover{background:transparent}
+@media (max-width:520px){.dsh-mc-setting-row{align-items:flex-start;gap:8px}.dsh-mc-setting-label-block{padding-top:4px}.dsh-mc-compact-trigger,.dsh-mc-picker-trigger{max-width:200px}.dsh-mc-chips{justify-content:flex-start}.dsh-mc-action-row{flex-wrap:wrap}.dsh-mc-action-buttons{margin-left:auto}}
 `
   const tag = document.createElement('style')
   tag.dataset.plugin = '@deepseek-ai/dsh-llm-pi-ai-capabilities'
@@ -309,6 +339,7 @@ function CapabilitiesSection(props: any): any {
   const t = props.t
   const [state, setState] = useState<CapabilitiesState>(EMPTY_STATE)
   const [selectedModel, setSelectedModel] = useState('')
+  const [saveFeedback, setSaveFeedback] = useState<SaveFeedbackState>({ phase: 'idle' })
   const dirtyProvidersRef = useRef(new Set<string>())
   const dirtyProviderFieldsRef = useRef(new Map<string, Set<string>>())
   const dirtyModelFieldsRef = useRef(new Map<string, Map<string, Set<string>>>())
@@ -327,7 +358,7 @@ function CapabilitiesSection(props: any): any {
     const startDirtyVersion = dirtyVersionRef.current
     const generation = ++loadGenerationRef.current
     if (stateRef.current.status !== 'ready') {
-      setState(prev => ({ ...prev, status: 'loading', error: undefined, saved: undefined }))
+      setState(prev => ({ ...prev, status: 'loading', error: undefined }))
     }
     try {
       const [settingsResponse, hostVersion] = await Promise.all([
@@ -413,7 +444,6 @@ function CapabilitiesSection(props: any): any {
       setState({
         status: 'ready',
         error: undefined,
-        saved: undefined,
         writable: result.value?.writable !== false,
         revision: typeof view['revision'] === 'number' ? view['revision'] as number : 0,
         providers,
@@ -455,16 +485,27 @@ function CapabilitiesSection(props: any): any {
     })
   }, [])
 
+  useEffect(() => {
+    if (saveFeedback.phase !== 'success') return
+    const timer = setTimeout(() => setSaveFeedback({ phase: 'idle' }), 2600)
+    return () => clearTimeout(timer)
+  }, [saveFeedback.phase, saveFeedback.message])
+
   const changeProvider = (provider: string): void => {
     const firstModel = Object.keys(state.modelDrafts[provider] ?? {})[0] ?? ''
-    setState(prev => ({ ...prev, selectedProvider: provider, saved: undefined }))
+    setState(prev => ({ ...prev, selectedProvider: provider }))
     setSelectedModel(firstModel)
+    markEdited()
   }
 
   const changeCurrentModel = (model: string): void => {
     if (!model) return
     setSelectedModel(model)
-    setState(prev => ({ ...prev, saved: undefined }))
+    markEdited()
+  }
+
+  const markEdited = (): void => {
+    setSaveFeedback(prev => prev.phase === 'saving' ? prev : { phase: 'idle' })
   }
 
   const markProviderDirty = (provider: string, fields: string[] = []): void => {
@@ -474,6 +515,7 @@ function CapabilitiesSection(props: any): any {
     for (const field of fields) dirty.add(field)
     dirtyProviderFieldsRef.current.set(provider, dirty)
     dirtyVersionRef.current += 1
+    markEdited()
   }
 
   const markModelDirty = (provider: string, model: string, fields: string[] = []): void => {
@@ -594,6 +636,7 @@ function CapabilitiesSection(props: any): any {
   const save = (): void => {
     if (state.status !== 'ready' || state.selectedProvider === '' || dirtyProvidersRef.current.size === 0 || saveInFlightRef.current) return
     saveInFlightRef.current = true
+    setSaveFeedback({ phase: 'saving', message: t('saving') })
     let ops: ReturnType<typeof collectOpsForAllProviders>
     const dirtyProviders = new Set(dirtyProvidersRef.current)
     const saveVersion = dirtyVersionRef.current
@@ -604,7 +647,8 @@ function CapabilitiesSection(props: any): any {
         const draft = state.modelDrafts[provider]?.[model]
         if (draft?.reasoningMode === 'custom' && draft.efforts.length === 0) {
           saveInFlightRef.current = false
-          setState(prev => ({ ...prev, saved: undefined, error: t('reasoningEmptyError') }))
+          setState(prev => ({ ...prev, error: t('reasoningEmptyError') }))
+          setSaveFeedback({ phase: 'error', message: t('saveFailed') })
           return
         }
       }
@@ -617,26 +661,28 @@ function CapabilitiesSection(props: any): any {
       )
     } catch (error: any) {
       saveInFlightRef.current = false
-      setState(prev => ({ ...prev, saved: undefined, error: String(error?.message ?? error) }))
+      setState(prev => ({ ...prev, error: String(error?.message ?? error) }))
+      setSaveFeedback({ phase: 'error', message: t('saveFailed') })
       return
     }
-    setState(prev => ({ ...prev, saved: undefined, error: undefined }))
+    setState(prev => ({ ...prev, error: undefined }))
     void Promise.resolve().then(() => api.settings.mutate({ ns: PI_AI_NS, ops, expectedRevision: state.revision })).then((response: any) => {
       if (response?.result?.ok !== true) {
         throw new Error(response?.result?.error?.message ?? 'settings.mutate failed')
       }
       const nextRevision = mutationRevision(response)
-       if (dirtyVersionRef.current !== saveVersion) {
-        setState(prev => ({ ...prev, revision: nextRevision ?? prev.revision, saved: t('savedWithPending') }))
+      if (dirtyVersionRef.current !== saveVersion) {
+        setState(prev => ({ ...prev, revision: nextRevision ?? prev.revision }))
+        setSaveFeedback({ phase: 'pending', message: t('savedWithPending') })
         return
       }
       for (const provider of dirtyProviders) {
-         dirtyProvidersRef.current.delete(provider)
-         dirtyProviderFieldsRef.current.delete(provider)
-         dirtyModelFieldsRef.current.delete(provider)
-       }
+        dirtyProvidersRef.current.delete(provider)
+        dirtyProviderFieldsRef.current.delete(provider)
+        dirtyModelFieldsRef.current.delete(provider)
+      }
       return load().then(() => {
-        setState(prev => ({ ...prev, saved: t('saved') }))
+        setSaveFeedback({ phase: 'success', message: t('saved') })
       })
     }).catch((error: any) => {
       const message = String(error?.message ?? error)
@@ -645,6 +691,7 @@ function CapabilitiesSection(props: any): any {
         ? `${t('reasoningEffortUnsupportedTitle')}${parsed.provider && parsed.model ? `\n${parsed.provider} / ${parsed.model}` : ''}${parsed.effort ? `\n${t('reasoningEffortUnsupportedHit')}: ${parsed.effort}` : ''}`
         : undefined
       setState(prev => ({ ...prev, error: friendly ?? message }))
+      setSaveFeedback({ phase: 'error', message: t('saveFailed') })
       // Keep the conflict visible so the user can choose when to reload.
     }).finally(() => { saveInFlightRef.current = false })
   }
@@ -764,7 +811,6 @@ function CapabilitiesSection(props: any): any {
     h('h2', { className: 'dsh-mc-title' }, t('nav')),
     h('p', { className: 'dsh-mc-intro' }, t('pageDescription')),
     state.error ? h('div', { className: 'dsh-mc-feedback' }, h('p', { className: 'dsh-mc-error' }, state.error), h('button', { type: 'button', className: 'dsh-mc-link-button', onClick: () => void load(true) }, t('reload'))) : null,
-    state.saved ? h('p', { className: 'dsh-mc-saved' }, state.saved) : null,
 
     providerDraft ? h(Panel, {
         title: t('providerSettings'),
@@ -849,12 +895,12 @@ function CapabilitiesSection(props: any): any {
           onChange: updateProviderCompat,
         }),
         h(CompatDisclosure, {
-          summary: t('advancedCompatibility'), fields: providerAdvanced, drafts: providerCompat,
+          summary: t('advancedCompatibility'), variant: 'group', fields: providerAdvanced, drafts: providerCompat,
           applicable: providerAdvancedMap.applicable, existing: providerAdvancedMap.existing,
           enumOptions: state.enumOptions, level: 'provider', t, onChange: updateProviderCompat,
         }),
         h(CompatDisclosure, {
-          summary: t('anthropicCompatibility'), fields: providerAnthropic, drafts: providerCompat,
+          summary: t('anthropicCompatibility'), variant: 'group', fields: providerAnthropic, drafts: providerCompat,
           applicable: providerAnthropicMap.applicable, existing: providerAnthropicMap.existing,
           enumOptions: state.enumOptions, level: 'provider', t, onChange: updateProviderCompat,
         }),
@@ -957,7 +1003,7 @@ function CapabilitiesSection(props: any): any {
             control: h('span', { className: 'dsh-mc-muted' }, mismatch.missing.map(levelLabel).join(' · ')),
           }) : null,
         ),
-        h(DisclosureRow, { summary: t('modelCompatDisclosure') },
+        h(DisclosureRow, { summary: t('modelCompatDisclosure'), variant: 'section' },
           h('div', { className: 'dsh-mc-disclosure-fields' },
             h(CompatGroupSection, {
               fields: modelCompatFields.filter(field => field.group === 'common'), drafts: activeCompatDrafts,
@@ -965,12 +1011,12 @@ function CapabilitiesSection(props: any): any {
               enumOptions: state.enumOptions, level: 'model', t, onChange: updateModelCompat,
             }),
             h(CompatDisclosure, {
-              summary: t('advancedCompatibility'), fields: modelCompatFields.filter(field => field.group === 'advanced'), drafts: activeCompatDrafts,
+              summary: t('advancedCompatibility'), variant: 'group', fields: modelCompatFields.filter(field => field.group === 'advanced'), drafts: activeCompatDrafts,
               applicable: modelCompatMap.applicable, existing: modelCompatMap.existing,
               enumOptions: state.enumOptions, level: 'model', t, onChange: updateModelCompat,
             }),
             h(CompatDisclosure, {
-              summary: t('anthropicCompatibility'), fields: modelCompatFields.filter(field => field.group === 'anthropic'), drafts: activeCompatDrafts,
+              summary: t('anthropicCompatibility'), variant: 'group', fields: modelCompatFields.filter(field => field.group === 'anthropic'), drafts: activeCompatDrafts,
               applicable: modelCompatMap.applicable, existing: modelCompatMap.existing,
               enumOptions: state.enumOptions, level: 'model', t, onChange: updateModelCompat,
             }),
@@ -979,15 +1025,31 @@ function CapabilitiesSection(props: any): any {
         ) : null,
 
     h('div', { className: 'dsh-mc-action-row' },
-      h('button', { type: 'button', className: 'dsh-mc-button', onClick: resetProvider }, t('resetProvider')),
-      h('button', { type: 'button', className: 'dsh-mc-button', onClick: save }, t('save')),
+      h('div', { className: 'dsh-mc-action-feedback', role: saveFeedback.phase === 'error' ? 'alert' : 'status', 'aria-live': saveFeedback.phase === 'error' ? 'assertive' : 'polite' },
+        saveFeedback.phase !== 'idle'
+          ? h('span', { className: `dsh-mc-save-feedback dsh-mc-save-feedback-${saveFeedback.phase}` },
+              saveFeedback.phase === 'success' ? h('span', { className: 'dsh-mc-save-icon', 'aria-hidden': true }, h(CheckIcon)) : null,
+              saveFeedback.message ?? '',
+            )
+          : null,
+      ),
+      h('div', { className: 'dsh-mc-action-buttons' },
+        h('button', { type: 'button', className: 'dsh-mc-button', onClick: resetProvider }, t('resetProvider')),
+        h('button', {
+          type: 'button',
+          className: 'dsh-mc-button',
+          onClick: save,
+          disabled: saveButtonDisabled(dirtyProvidersRef.current.size > 0, saveFeedback.phase),
+          'aria-busy': saveFeedback.phase === 'saving',
+        }, saveFeedback.phase === 'saving' ? t('saving') : t('save')),
+      ),
     ),
   )
 }
 
 export const inject = ['slots', 'locale', 'connection', 'remote']
 
-const zh: Record<string, string> = {
+export const zh: Record<string, string> = {
   nav: '模型能力',
   pageDescription: '管理 DSH 模型能力、推理能力与接口兼容性。所有修改仅写入原生配置，不修改适配器源码。',
   loading: '加载中…',
@@ -1015,7 +1077,9 @@ const zh: Record<string, string> = {
   inputEffective: '当前生效',
   defaultReasoning: '默认推理等级',
   inherit: '继承',
+  saving: '保存中…',
   saved: '已保存',
+  saveFailed: '保存失败',
    savedWithPending: '本批次已保存，仍有未保存修改',
    'compat.clearOverride': '清除覆盖',
   save: '保存能力',
@@ -1136,12 +1200,12 @@ const zh: Record<string, string> = {
   'compat.chatTemplateArgs.description': 'JSON 对象，合并到 chat template 位置参数。',
   'compat.cacheControlFormat.label': '缓存控制格式',
   'compat.cacheControlFormat.description': 'Anthropic 缓存控制字段格式。',
-  'compat.eagerToolInput.label': '预填充工具输入',
-  'compat.eagerToolInput.description': '工具输入在请求中预填充。',
-  'compat.cacheControlOnTools.label': '工具使用缓存控制',
-  'compat.cacheControlOnTools.description': '工具定义支持缓存控制。',
-  'compat.temperature.label': 'temperature 参数',
-  'compat.temperature.description': 'Anthropic 兼容接口的温度参数。',
+  'compat.supportsEagerToolInputStreaming.label': 'Tool 输入流式预取',
+  'compat.supportsEagerToolInputStreaming.description': '控制 Anthropic 兼容接口是否支持提前流式返回 Tool 输入。',
+  'compat.supportsCacheControlOnTools.label': 'Tool Cache Control',
+  'compat.supportsCacheControlOnTools.description': '控制 Tool 定义是否支持 cache_control。',
+  'compat.supportsTemperature.label': 'Temperature 参数',
+  'compat.supportsTemperature.description': '控制 Anthropic 兼容接口是否发送 temperature 参数。',
   'compat.forceAdaptiveThinking.label': '强制自适应思考',
   'compat.forceAdaptiveThinking.description': '强制启用 adaptive thinking。',
   'compat.allowEmptySignature.label': '允许空签名',
@@ -1179,7 +1243,7 @@ const zh: Record<string, string> = {
   'compat.supportsStreaming.description': '兼容流式响应。',
 }
 
-const en: Record<string, string> = {
+export const en: Record<string, string> = {
   nav: 'Model Capabilities',
   pageDescription: 'Manage DSH model capabilities, reasoning and wire compatibility. Writes native settings only — never patches adapter sources.',
   loading: 'Loading…',
@@ -1207,7 +1271,9 @@ const en: Record<string, string> = {
   inputEffective: 'Effective',
   defaultReasoning: 'Default reasoning',
   inherit: 'Inherit',
+  saving: 'Saving…',
   saved: 'Saved',
+  saveFailed: 'Save failed',
   savedWithPending: 'Batch saved; unsaved changes remain',
   'compat.clearOverride': 'Clear override',
   save: 'Save capabilities',
@@ -1328,12 +1394,12 @@ const en: Record<string, string> = {
   'compat.chatTemplateArgs.description': 'JSON object merged into chat template positional arguments.',
   'compat.cacheControlFormat.label': 'Cache control format',
   'compat.cacheControlFormat.description': 'Anthropic cache control field format.',
-  'compat.eagerToolInput.label': 'Eager tool input',
-  'compat.eagerToolInput.description': 'Tool inputs are pre-filled in the request.',
-  'compat.cacheControlOnTools.label': 'Cache control on tools',
-  'compat.cacheControlOnTools.description': 'Tool definitions support cache control.',
-  'compat.temperature.label': 'temperature parameter',
-  'compat.temperature.description': 'Temperature for Anthropic-compatible APIs.',
+  'compat.supportsEagerToolInputStreaming.label': 'Eager tool input streaming',
+  'compat.supportsEagerToolInputStreaming.description': 'Controls whether the Anthropic-compatible API streams tool input eagerly.',
+  'compat.supportsCacheControlOnTools.label': 'Cache control on tools',
+  'compat.supportsCacheControlOnTools.description': 'Controls whether tool definitions support cache_control.',
+  'compat.supportsTemperature.label': 'Temperature parameter',
+  'compat.supportsTemperature.description': 'Controls whether the Anthropic-compatible API sends the temperature parameter.',
   'compat.forceAdaptiveThinking.label': 'Force adaptive thinking',
   'compat.forceAdaptiveThinking.description': 'Force adaptive thinking on.',
   'compat.allowEmptySignature.label': 'Allow empty signature',

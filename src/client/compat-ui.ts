@@ -97,6 +97,7 @@ export function CompatFieldControl(props: CompatFieldControlProps): any {
       value: text.trim() === '' ? t('compat.notConfigured') : t('compat.configured'),
       title: description,
       description,
+      variant: 'field',
     }, h('div', { className: 'dsh-mc-json-editor' },
       warning ? h('p', { className: 'dsh-mc-setting-warning' }, warning) : null,
       h(TextArea, {
@@ -116,7 +117,8 @@ export function CompatFieldControl(props: CompatFieldControlProps): any {
   const selectState = compatSelectState(field, applicable, schemaEnum, value, level, t)
   return h(SettingRow, {
     label,
-    description,
+    help: description,
+    description: warning ? description : undefined,
     warning,
     control: h('div', { className: 'dsh-mc-compat-control' },
       h(CompactSelect, {
@@ -156,7 +158,7 @@ export function CompatGroupSection(props: CompatGroupSectionProps): any {
   const visible = fields.filter(field => applicable[field.key] || existing[field.key])
   if (visible.length === 0) return null
   return h('div', { className: 'dsh-mc-compat-group' },
-    title ? h('h3', { className: 'dsh-mc-section-title' }, title) : null,
+    title ? h('div', { className: 'dsh-mc-compat-group-title', role: 'heading', 'aria-level': 5 }, title) : null,
     visible.map(field => h(CompatFieldControl, {
       key: field.key,
       field,
@@ -173,15 +175,16 @@ export function CompatGroupSection(props: CompatGroupSectionProps): any {
 
 export interface CompatDisclosureProps extends CompatGroupSectionProps {
   summary: string
+  variant?: 'section' | 'group'
 }
 
 export function CompatDisclosure(props: CompatDisclosureProps): any {
-  const { summary, fields, drafts, applicable, existing, enumOptions: enumValues, level, t, onChange } = props
+  const { summary, fields, drafts, applicable, existing, enumOptions: enumValues, level, t, onChange, variant } = props
   const h = createElement
   const visible = fields.filter(field => applicable[field.key] || existing[field.key])
   if (visible.length === 0) return null
-  return h(DisclosureRow, { summary },
-    h('div', { className: 'dsh-mc-disclosure-fields' },
+  return h(DisclosureRow, { summary, variant: variant ?? 'group' },
+    h('div', { className: 'dsh-mc-disclosure-fields dsh-mc-compat-group-content' },
       visible.map(field => h(CompatFieldControl, {
         key: field.key,
         field,
