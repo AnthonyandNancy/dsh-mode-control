@@ -283,8 +283,12 @@ No separate i18n framework is used.
 ```bash
 npm install
 npm run build
-npm run build:client
 ```
+
+`npm run build` first removes the old `lib` directory, then builds the host and
+client artifacts and validates that `lib/client.js` registers the package name
+through `window.__ModuleLoader__`. Do not use a host-only build when preparing
+an installable package.
 
 ## Tests
 
@@ -296,10 +300,41 @@ Pure logic modules are unit-tested: semver parsing, subagent capability
 detection, compat metadata, compat state/merge, provider/model ops, subagent
 drafts, and runtime schema introspection.
 
+## Install from GitHub source
+
+When installing from a GitHub checkout, rebuild before every first install or
+source update. Do not install an old `.tgz`, and do not install the source
+directory before its build has completed.
+
+PowerShell (replace the path with the checkout directory):
+
+```powershell
+cd E:\demo\dsh\dsh-mode-control
+Remove-Item -Recurse -Force .\lib -ErrorAction SilentlyContinue
+Remove-Item -Force .\*.tgz -ErrorAction SilentlyContinue
+npm install
+npm run build
+$package = npm pack --silent
+if ($LASTEXITCODE -ne 0) { throw 'Plugin build/package failed; do not install an old package.' }
+$package
+```
+
+Install only the newly printed tarball with the DSH agent's normal local-package
+installation action, then refresh DSH. After every source update, repeat the
+sequence and install only the new tarball. `npm pack` also runs `prepack`, which
+rebuilds and validates the package again before writing the tarball.
+
+For a DSH agent with the development installer available, the equivalent order
+is `dev_build_plugin` for this directory, then `dev_install_package` for the
+same directory with `profile="web"`, followed by `dev_plugin_status`. If those
+agent tools are unavailable, use the PowerShell sequence above and the agent's
+normal local-package installation action.
+
 ## Install
 
-Add the plugin to the Harness profile and mount it as a normal DSH plugin.
-The client half registers a **Model Capabilities** section in Settings.
+Add the freshly built package to the Harness profile and mount it as a normal
+DSH plugin. The client half registers a **Model Capabilities** section in
+Settings.
 
 The Model Capabilities settings UI follows DSH's selector-first interaction model.
 Model catalogs and subagent model pools are opened on demand through

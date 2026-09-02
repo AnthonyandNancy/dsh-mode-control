@@ -25,9 +25,13 @@
     "vitest": "^3.2.4"
   },
   "scripts": {
-    "build": "bash scripts/build.sh",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "node scripts/clean-build.mjs",
+    "build:host": "bash scripts/build.sh",
     "build:client": "tsdown",
+    "validate:client": "node scripts/validate-client.mjs",
+    "build": "npm run clean && npm run build:host && npm run build:client && npm run validate:client",
+    "prepack": "npm run build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "typecheck:client": "tsc -p tsconfig.client.json --noEmit",
     "test": "vitest run"
   },
