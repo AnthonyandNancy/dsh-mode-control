@@ -45,6 +45,7 @@ import { CheckIcon, Chip, CompactSelect, DisclosureRow, InlineNumberEditor, Pane
 import { CAPABILITIES_CSS } from './styles.ts'
 import { ModelRoutePicker, buildProviderModelRouteOptions } from './model-picker.ts'
 import { collectOpsForAllProviders } from './save-helpers.ts'
+import { settingsTransportFrom } from './transport.ts'
 
 const NS = 'settings.llm-pi-ai-capabilities'
 const PI_AI_NS = 'llm-pi-ai'
@@ -972,6 +973,10 @@ function CapabilitiesSection(props: any): any {
   )
 }
 
+// Required ctx services. Kept to the keys every host era provides: declaring
+// `remote.settings`/`remote.llm`/`settingsScope` here would stall activation
+// on hosts that do not mount them, so the era-dependent settings transport is
+// resolved lazily in `transport.ts` instead.
 export const inject = ['slots', 'locale', 'connection', 'remote']
 
 export const zh: Record<string, string> = {
@@ -1371,6 +1376,11 @@ export const en: Record<string, string> = {
 export function apply(ctx: any): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), '@deepseek-ai/dsh-llm-pi-ai-capabilities: dictionaries')
   const t = ctx.locale.bind(NS)
+  // The settings transport is host-era dependent: 0.1.2-rc.1 removed
+  // `connection.api` in favor of the dynamically mounted Remote namespaces.
+  // `settingsTransportFrom` picks the surface by capability detection, so one
+  // bundle serves both host generations.
+  const api = settingsTransportFrom(ctx)
   ctx.effect(() => ctx.slots.inject('settings.section', () =>
     ctx.slots.register({
       name: 'settings.section',
@@ -1378,7 +1388,7 @@ export function apply(ctx: any): void {
       order: 30,
       label: () => t('nav'),
       inject: () => ({
-        api: ctx.get('connection').api,
+        api,
         remote: ctx.get('remote'),
         t,
       }),
