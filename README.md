@@ -54,8 +54,9 @@ unsupported field is ever written blindly.
 - **Interface Compatibility**: generic metadata-driven UI over the `compat`
   object. The field list lives in `src/client/compat-fields.ts`; adding a
   future pi-ai compat field is one registry entry + i18n strings.
-- **Subagent Model Control**: legacy fixed model (`agentOptions`) and native
-  dynamic selection (`subagent-model-selection.enabled/allowedModels`).
+- **Subagent Model Control**: legacy fixed model (`agentOptions`), native
+  allowed-model selection (`subagent-model-selection.enabled/allowedModels`),
+  and optional one-shot parent-model routing (`subAgentModelPolicy`).
 - **InheritBooleanMode**: `inherit` / `enabled` / `disabled` tri-states with
   `parseInheritBoolean()` and `collectOptionalBooleanOp()`.
 - **Runtime schema detection**: the UI walks the serialized Schemastery
@@ -129,6 +130,8 @@ The plugin writes only these namespaces:
   `agentOptions` and the native tool-instance toggle.
 - `subagent-model-selection` — official native allowed-model list, when the
   namespace exists.
+- `subAgentModelPolicy` — optional provider/model mapping for one-shot `spawn`
+  children. An unmatched route leaves DSH's normal parent inheritance intact.
 
 It never:
 
@@ -239,6 +242,32 @@ Allowed-model validation:
 - duplicate `provider/model` routes are rejected.
 - incomplete routes (empty provider or model) are rejected.
 
+## Dynamic one-shot subagent routing
+
+`subAgentModelPolicy` is an optional plugin configuration with the shape:
+
+```json
+{
+  "subAgentModelPolicy": {
+    "provider1": {
+      "model1": { "provider": "provider2", "model": "model2" }
+    }
+  }
+}
+```
+
+For each one-shot `spawn` child, the wrapper reads the parent's latest
+`session.requestHeader().config` route at creation time, falling back to the
+parent's creation options before its first request. A matching policy target
+overrides the child provider/model; other `agentOptions` fields are preserved.
+An empty or unmatched policy leaves the original request unchanged so DSH's
+normal parent-model inheritance applies. No Session or child-model route is
+cached.
+
+The current DSH v0.1.2-rc.1 provider seam does not allow this wrapper to alter
+`startContinuable()` child options, so continuable children retain their
+existing behavior and are not dynamically rerouted by this feature.
+
 ## Runtime schema detection
 
 The client resolves the serialized Schemastery envelope and produces:
@@ -268,6 +297,7 @@ The plugin does **not**:
 - implement its own Anthropic provider
 - construct `/v1/messages` requests
 - keep a second current-reasoning state
+- modify continuable child options; dynamic routing is one-shot only
 
 ## i18n
 

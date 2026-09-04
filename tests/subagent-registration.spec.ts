@@ -7,6 +7,10 @@ import {
   selectCanonicalToolSubagentEntry,
   type ToolSubagentEntryMatch,
 } from '../src/subagent/config-service.ts'
+import {
+  installDynamicSubagentRouting,
+  registerDynamicSubagentProvider,
+} from '../src/subagent/registration.ts'
 
 function makeEntry(entryId: string, config: Record<string, unknown>) {
   const entry: any = {
@@ -118,5 +122,47 @@ describe('runtime schema diagnostics fields', () => {
     expect(serialized.runtime.targetToolName).toBe('subagent')
     expect(serialized.runtime.targetProvider).toBe('spawn')
     expect(serialized.runtime.targetBaseUrl).toBe('file:///profile/')
+  })
+})
+
+describe('registerDynamicSubagentProvider', () => {
+  it('wraps the named original provider and registers it', () => {
+    const original = {
+      name: 'spawn',
+      capabilities: { agentOptions: true, outputSchema: true, depthLimit: true, toolFilter: true, persona: true },
+      inheritsParentContext: false,
+      start: vi.fn(),
+    }
+    const registerProvider = vi.fn(() => () => {})
+    const getProvider = vi.fn((name: string) => name === 'spawn' ? original : undefined)
+    const subagents = { getProvider, registerProvider }
+    const policy = { p: { m: { provider: 'p', model: 'child' } } }
+
+    const dispose = registerDynamicSubagentProvider(subagents, 'spawn', policy)
+
+    expect(registerProvider).toHaveBeenCalledOnce()
+    expect(registerProvider.mock.calls[0]?.[0].name).toBe('dynamic-spawn')
+    expect(dispose).toBeTypeOf('function')
+  })
+
+  it('does not register when the original provider is absent', () => {
+    const registerProvider = vi.fn()
+    const subagents = { getProvider: vi.fn(() => undefined), registerProvider }
+
+    expect(registerDynamicSubagentProvider(subagents, 'spawn', {})).toBeUndefined()
+    expect(registerProvider).not.toHaveBeenCalled()
+  })
+
+  it('binds the canonical entry to the dynamic provider and preserves config', () => {
+    const original = { name: 'spawn', capabilities: { agentOptions: true, outputSchema: true, depthLimit: true, toolFilter: true, persona: true }, inheritsParentContext: false, start: vi.fn() }
+    const registerProvider = vi.fn(() => () => {})
+    const getProvider = vi.fn((name: string) => name === 'spawn' ? original : undefined)
+    const subagents = { getProvider, registerProvider }
+    const entry = { id: 'tool-subagent', options: { config: { provider: 'spawn', toolName: 'subagent', maxDepth: 3 } }, update: vi.fn() }
+
+    const result = installDynamicSubagentRouting({ subagents, loader: { entries: () => [entry] } }, {})
+
+    expect(result.installed).toBe(true)
+    expect(entry.update).toHaveBeenCalledWith({ config: { provider: 'dynamic-spawn', toolName: 'subagent', maxDepth: 3 } })
   })
 })
