@@ -1,5 +1,6 @@
 import {
   resolveSubAgentModel,
+  type ChildModelTarget,
   type ParentModelContext,
   type SubAgentModelPolicy,
 } from './modelResolver.ts'
@@ -19,12 +20,24 @@ export interface SubagentCapabilities {
   persona: boolean
 }
 
+export const DYNAMIC_PROVIDER_MARKER = Symbol.for('dsh-mode-control.dynamic-provider')
+export const DYNAMIC_PROVIDER_DISPOSER = Symbol.for('dsh-mode-control.dynamic-provider-disposer')
+
 export interface OneShotSubagentProvider {
   name: string
   capabilities: SubagentCapabilities
   inheritsParentContext: boolean
   agentRouteDefaults?: Readonly<{ provider: string; model: string }>
   start(request: any): Promise<any> | any
+  prepareContinuable?(request: any): Promise<any>
+  readonly [DYNAMIC_PROVIDER_MARKER]?: true
+  [DYNAMIC_PROVIDER_DISPOSER]?: () => void
+  updateDynamicSource?(original: OneShotSubagentProvider | undefined, policy?: SubAgentModelPolicy, options?: DynamicSubagentProviderOptions): void
+  disposeDynamicSource?(): void
+}
+
+export interface DynamicSubagentProviderOptions {
+  validateTarget?: (target: ChildModelTarget) => Promise<void> | void
 }
 
 function routeFrom(value: Record<string, unknown> | undefined): ParentModelContext | undefined {
@@ -49,24 +62,64 @@ export function currentParentModel(parent: ParentAgentLike | undefined): ParentM
 /**
  * Wrap a one-shot provider with per-start parent-model routing.
  *
- * This intentionally implements only `start()`. The official continuable
- * manager resolves child options before calling provider preparation, so this
- * wrapper must not advertise continuable support.
+ * The wrapper only applies the policy to one-shot `start()` requests. When the
+ * source provider supports continuable children, its preparation method is
+ * forwarded unchanged so the default tool remains usable; the policy cannot
+ * alter the already-resolved continuable options on this DSH runtime.
  */
 export function createDynamicSubagentProvider(
   original: OneShotSubagentProvider,
   policy?: SubAgentModelPolicy,
+  options: DynamicSubagentProviderOptions = {},
 ): OneShotSubagentProvider {
-  return {
+  let source: OneShotSubagentProvider | undefined = original
+  let currentPolicy = policy
+  let validateTarget = options.validateTarget
+  const dynamic: OneShotSubagentProvider = {
     name: `dynamic-${original.name}`,
     capabilities: { ...original.capabilities },
     inheritsParentContext: original.inheritsParentContext,
     ...(original.agentRouteDefaults === undefined ? {} : { agentRouteDefaults: original.agentRouteDefaults }),
+    ...(original.prepareContinuable === undefined ? {} : {
+      prepareContinuable: (request: any): Promise<any> => {
+        const activeSource = source
+        if (!activeSource?.prepareContinuable) throw new Error(`dynamic subagent provider "${dynamic.name}" has no continuable source`)
+        return activeSource.prepareContinuable.call(activeSource, request)
+      },
+    }),
+    [DYNAMIC_PROVIDER_MARKER]: true,
+    updateDynamicSource(nextOriginal, nextPolicy, nextOptions = {}) {
+      source = nextOriginal
+      currentPolicy = nextPolicy
+      validateTarget = nextOptions.validateTarget
+      dynamic.capabilities = nextOriginal ? { ...nextOriginal.capabilities } : dynamic.capabilities
+      if (nextOriginal) {
+        dynamic.inheritsParentContext = nextOriginal.inheritsParentContext
+        if (nextOriginal.agentRouteDefaults === undefined) delete dynamic.agentRouteDefaults
+        else dynamic.agentRouteDefaults = nextOriginal.agentRouteDefaults
+        if (nextOriginal.prepareContinuable && !dynamic.prepareContinuable) {
+          dynamic.prepareContinuable = (request: any): Promise<any> => {
+            const activeSource = source
+            if (!activeSource?.prepareContinuable) throw new Error(`dynamic subagent provider "${dynamic.name}" has no continuable source`)
+            return activeSource.prepareContinuable.call(activeSource, request)
+          }
+        }
+      } else if (dynamic.prepareContinuable) {
+        delete dynamic.prepareContinuable
+      }
+    },
+    disposeDynamicSource() {
+      source = undefined
+    },
     async start(request: any): Promise<any> {
+      const activeSource = source
+      if (!activeSource) throw new Error(`dynamic subagent provider "${dynamic.name}" has no source provider`)
       const parentModel = currentParentModel(request?.parent)
-      const target = parentModel === undefined ? undefined : resolveSubAgentModel(parentModel, policy)
-      if (target === undefined) return original.start(request)
-      return original.start({
+      const target = parentModel === undefined ? undefined : resolveSubAgentModel(parentModel, currentPolicy)
+      if (target === undefined) return activeSource.start(request)
+      await validateTarget?.(target)
+      if (source !== activeSource) throw new Error(`dynamic subagent provider "${dynamic.name}" source changed during validation`)
+      return activeSource.start({
         ...request,
         agentOptions: {
           ...(request.agentOptions ?? {}),
@@ -76,4 +129,5 @@ export function createDynamicSubagentProvider(
       })
     },
   }
+  return dynamic
 }

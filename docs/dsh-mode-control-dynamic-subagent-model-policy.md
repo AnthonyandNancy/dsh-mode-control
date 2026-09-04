@@ -65,7 +65,8 @@ interface ChildModelTarget {
 }
 
 function resolveSubAgentModel(
-  parent: ParentModelContext
+  parent: ParentModelContext,
+  policy?: SubAgentModelPolicy
 ): ChildModelTarget | undefined
 ```
 
@@ -90,11 +91,14 @@ cache.childModel
 必须在创建子代理时实时解析：
 
 ``` ts
-const currentModel = getCurrentAgentModel(sessionId)
+const currentModel = {
+  provider: parent.session.requestHeader()?.config.provider,
+  model: parent.session.requestHeader()?.config.model,
+}
 
-const childModel = resolveSubAgentModel(currentModel)
+const childModel = resolveSubAgentModel(currentModel, policy)
 
-ctx.subagents.start({
+ctx.subagents.start('dynamic-spawn', {
   parent,
   prompt,
   agentOptions: childModel
@@ -165,11 +169,18 @@ session.model
 session.initialProvider
 ```
 
-正确：
+当前 DSH v0.1.2-rc.1 的公开运行时中，创建后的 Agent 没有稳定的 `agent.provider` / `agent.model` 字段。动态 provider 使用以下权威来源：
 
 ``` ts
-agent.provider
-agent.model
+agent.session.requestHeader()?.config.provider
+agent.session.requestHeader()?.config.model
+```
+
+在父 Agent 尚未发出第一条请求时，回退到：
+
+``` ts
+agent.options.provider
+agent.options.model
 ```
 
 原因：

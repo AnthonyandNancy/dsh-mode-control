@@ -43,22 +43,21 @@ export {
 }
 
 export const name = '@deepseek-ai/dsh-llm-pi-ai-capabilities'
-export const inject = ['subagents', 'loader']
+export const inject = ['subagents', 'loader', 'llm']
 
 /** Host plugin body; the runtime effect is delivered through the client settings page. */
 export function apply(ctx: any, config?: DshModeControlConfig): void {
-  const runtimeCtx = ctx
-  runtimeCtx.subagents ??= ctx.inject?.subagents
-  runtimeCtx.loader ??= ctx.inject?.loader
+  const runtimeCtx = Object.create(ctx) as any
+  runtimeCtx.subagents = ctx.subagents ?? ctx.inject?.subagents
+  runtimeCtx.loader = ctx.loader ?? ctx.inject?.loader
+  runtimeCtx.llm = ctx.llm ?? ctx.inject?.llm
   // The subagent model control service registers its auditable settings
   // namespace only when the version gate passes. It uses the official loader
   // Entry.update() API, never direct file/JS surgery. Registration is
   // lifecycle-aware: it retries when the tool-subagent loader entry appears
   // later, and stays idempotent.
   startSubagentSettingsRegistration(runtimeCtx)
-  if (Object.keys(config?.subAgentModelPolicy ?? {}).length > 0) {
-    startDynamicSubagentRegistration(runtimeCtx, config?.subAgentModelPolicy ?? {})
-  }
+  startDynamicSubagentRegistration(runtimeCtx, config?.subAgentModelPolicy ?? {})
 }
 
 export default { name, apply }

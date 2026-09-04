@@ -264,9 +264,10 @@ An empty or unmatched policy leaves the original request unchanged so DSH's
 normal parent-model inheritance applies. No Session or child-model route is
 cached.
 
-The current DSH v0.1.2-rc.1 provider seam does not allow this wrapper to alter
-`startContinuable()` child options, so continuable children retain their
-existing behavior and are not dynamically rerouted by this feature.
+The wrapper forwards the original provider's `prepareContinuable()` unchanged
+when the canonical tool uses `backgroundMode: "continuable"`; the policy does
+not alter those already-resolved continuable child options. This keeps the
+standard GUI path usable while limiting dynamic routing to one-shot starts.
 
 ## Runtime schema detection
 

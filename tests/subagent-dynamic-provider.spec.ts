@@ -79,6 +79,56 @@ describe('createDynamicSubagentProvider', () => {
     expect(original.start.mock.calls[1]?.[0].agentOptions).toEqual({ provider: 'provider2', model: 'child2' })
   })
 
+  it('runs optional target validation before delegating', async () => {
+    const original = { name: 'spawn', capabilities: { agentOptions: true, outputSchema: true, depthLimit: true, toolFilter: true, persona: true }, inheritsParentContext: false, start: vi.fn() }
+    const validateTarget = vi.fn(() => { throw new Error('unknown model') })
+    const provider = createDynamicSubagentProvider(original, policy, { validateTarget })
+
+    await expect(provider.start({ parent: parent({ provider: 'provider1', model: 'model1' }) })).rejects.toThrow('unknown model')
+    expect(validateTarget).toHaveBeenCalledWith({ provider: 'provider1', model: 'child1' })
+    expect(original.start).not.toHaveBeenCalled()
+  })
+
+  it('rejects an in-flight start if the source changes during target validation', async () => {
+    let releaseValidation!: () => void
+    const validation = new Promise<void>(resolve => { releaseValidation = resolve })
+    const original = { name: 'spawn', capabilities: { agentOptions: true, outputSchema: true, depthLimit: true, toolFilter: true, persona: true }, inheritsParentContext: false, start: vi.fn() }
+    const replacement = { name: 'spawn', capabilities: { agentOptions: true, outputSchema: true, depthLimit: true, toolFilter: true, persona: true }, inheritsParentContext: false, start: vi.fn() }
+    const provider = createDynamicSubagentProvider(original, policy, { validateTarget: () => validation })
+    const pending = provider.start({ parent: parent({ provider: 'provider1', model: 'model1' }) })
+
+    provider.updateDynamicSource?.(replacement, policy)
+    releaseValidation()
+
+    await expect(pending).rejects.toThrow('source changed during validation')
+    expect(original.start).not.toHaveBeenCalled()
+    expect(replacement.start).not.toHaveBeenCalled()
+  })
+
+  it('updates the source and policy without recreating the wrapper', async () => {
+    const first = { name: 'spawn', capabilities: { agentOptions: true, outputSchema: true, depthLimit: true, toolFilter: true, persona: true }, inheritsParentContext: false, start: vi.fn(async (request: any) => request) }
+    const second = { name: 'spawn', capabilities: { agentOptions: true, outputSchema: true, depthLimit: true, toolFilter: true, persona: true }, inheritsParentContext: false, start: vi.fn(async (request: any) => request) }
+    const provider = createDynamicSubagentProvider(first, policy)
+    provider.updateDynamicSource?.(second, { provider1: { model1: { provider: 'provider2', model: 'child2' } } })
+
+    await provider.start({ parent: parent({ provider: 'provider1', model: 'model1' }) })
+
+    expect(first.start).not.toHaveBeenCalled()
+    expect(second.start).toHaveBeenCalledOnce()
+    expect(second.start.mock.calls[0]?.[0]).toMatchObject({
+      agentOptions: { provider: 'provider2', model: 'child2' },
+    })
+  })
+
+  it('fails closed when the source provider is removed', async () => {
+    const original = { name: 'spawn', capabilities: { agentOptions: true, outputSchema: true, depthLimit: true, toolFilter: true, persona: true }, inheritsParentContext: false, start: vi.fn() }
+    const provider = createDynamicSubagentProvider(original, policy)
+    provider.disposeDynamicSource?.()
+
+    await expect(provider.start({ parent: parent({ provider: 'provider1', model: 'model1' }) }))
+      .rejects.toThrow('has no source provider')
+  })
+
   it('leaves the original request unchanged when policy has no match', async () => {
     const original = { name: 'spawn', capabilities: { agentOptions: true, outputSchema: true, depthLimit: true, toolFilter: true, persona: true }, start: vi.fn(async (request: any) => request) }
     const provider = createDynamicSubagentProvider(original, policy)
