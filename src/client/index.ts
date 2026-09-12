@@ -6,7 +6,7 @@
  * 子代理模型 → 模型列表 → 模型详情 → 恢复默认 / 保存能力.
  *
  * Only native settings namespaces are written (`llm-pi-ai`,
- * `dsh-mode-control.subagent`, `subagent-model-selection`); no custom RPC is
+ * `dsh-mode-control-subagent`, `subagent-model-selection`); no custom RPC is
  * invented and no second runtime config source is introduced.
  */
 

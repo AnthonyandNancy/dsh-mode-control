@@ -2,11 +2,17 @@
  * Host-side subagent model control service.
  *
  * The client never talks to the cordis loader directly. Instead this service
- * owns a small, auditable settings namespace (`dsh-mode-control.subagent`)
+ * owns a small, auditable settings namespace (`dsh-mode-control-subagent`)
  * whose only writable surfaces are:
  *
  * - `agentOptions`            → legacy fixed child model (provider/model/maxTokens)
  * - `modelSelectionSettings`  → native tool-instance toggle (when supported)
+ *
+ * The namespace name must satisfy the host's settings namespace rule
+ * (`/^[a-z][a-z0-9-]*$/`, enforced by `settings.register` since DSH
+ * 0.1.0-rc.7): a dotted id like `dsh-mode-control.subagent` is rejected with a
+ * TypeError and the namespace never appears in `settings/describe`, which in
+ * turn hides the whole subagent card in the client.
  *
  * Every write is applied through the official loader `Entry.update()` API,
  * which merges options, restarts the entry as needed, and persists through the

@@ -34,9 +34,11 @@ back to the serialized `llm-pi-ai` settings schema.
 
 Subagent UI is entry/schema driven; the version is advisory only:
 
-- **Host**: the `dsh-mode-control.subagent` settings namespace is registered
+- **Host**: the `dsh-mode-control-subagent` settings namespace is registered
   whenever a canonical `tool-subagent` loader entry exists. The version is
-  recorded in the runtime snapshot for warnings.
+  recorded in the runtime snapshot for warnings. The id is hyphen-only: the
+  host rejects dotted namespace names (`/^[a-z][a-z0-9-]*$/`) since DSH
+  0.1.0-rc.7, and a rejected registration hides the whole card.
 - **Client**: `SubagentSettingsCard` returns `null` only when
   `runtimeCaps.subagent.visible` is false (entry missing).
 
@@ -125,7 +127,7 @@ pi-ai
 The plugin writes only these namespaces:
 
 - `llm-pi-ai` — provider/model capabilities and `compat`.
-- `dsh-mode-control.subagent` — auditable bridge surface for legacy
+- `dsh-mode-control-subagent` — auditable bridge surface for legacy
   `agentOptions` and the native tool-instance toggle.
 - `subagent-model-selection` — official native allowed-model list, when the
   namespace exists.

@@ -2,3 +2,7 @@ node_modules/
 lib/
 *.tsbuildinfo
 *.tgz
+.playwright-cli
+tests
+tests
+.tmp-inspect
