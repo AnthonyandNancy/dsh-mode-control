@@ -3,10 +3,9 @@
  *
  * Page order (spec):
  * Provider Selector → Provider 默认能力 → Provider 推理能力 → 接口兼容性 →
- * 子代理模型 → 模型列表 → 模型详情 → 恢复默认 / 保存能力.
+ * 模型列表 → 模型详情 → 恢复默认 / 保存能力.
  *
- * Only native settings namespaces are written (`llm-pi-ai`,
- * `dsh-mode-control-subagent`, `subagent-model-selection`); no custom RPC is
+ * Only the native `llm-pi-ai` settings namespace is written; no custom RPC is
  * invented and no second runtime config source is introduced.
  */
 
@@ -38,9 +37,7 @@ import {
 import { COMPAT_FIELDS, isCompatFieldApplicable, type CompatFieldDefinition } from './compat-fields.ts'
 import { emptyCompatDrafts, type CompatDrafts } from './compat-state.ts'
 import { CompatDisclosure, CompatGroupSection } from './compat-ui.ts'
-import { collectEnumOptions, collectRuntimeCapabilities, protocolsForModel, protocolsForProvider, schemaObjectKeys, subagentRuntimeFactsFromValue, type RuntimeCapabilities } from './runtime-capabilities.ts'
-import { SubagentSettingsCard } from './subagent-ui.ts'
-import { SUBAGENT_MODEL_SELECTION_NAMESPACE, SUBAGENT_NAMESPACE } from '../subagent/constants.ts'
+import { collectEnumOptions, collectRuntimeCapabilities, protocolsForModel, protocolsForProvider, type RuntimeCapabilities } from './runtime-capabilities.ts'
 import { CheckIcon, Chip, CompactSelect, DisclosureRow, InlineNumberEditor, Panel, SettingRow, Subsection } from './ui.ts'
 import { CAPABILITIES_CSS } from './styles.ts'
 import { ModelRoutePicker, buildProviderModelRouteOptions } from './model-picker.ts'
@@ -49,18 +46,6 @@ import { settingsTransportFrom } from './transport.ts'
 
 const NS = 'settings.llm-pi-ai-capabilities'
 const PI_AI_NS = 'llm-pi-ai'
-
-interface SubagentControlState {
-  value: { agentOptions?: unknown; modelSelectionSettings?: boolean }
-  revision?: number
-  writable: boolean
-}
-
-interface NativeSubagentState {
-  value?: unknown
-  revision?: number
-  writable: boolean
-}
 
 interface CapabilitiesState {
   status: 'loading' | 'ready' | 'error'
@@ -73,8 +58,6 @@ interface CapabilitiesState {
   providerDrafts: Record<string, ProviderDraft>
   modelDrafts: Record<string, Record<string, ModelDraft>>
   runtimeCaps: RuntimeCapabilities
-  subagentControl: SubagentControlState
-  nativeSubagent: NativeSubagentState
   enumOptions: { maxTokensField: string[]; thinkingFormat: string[]; cacheControlFormat: string[] }
   error?: string
 }
@@ -95,16 +78,6 @@ const EMPTY_RUNTIME_CAPS: RuntimeCapabilities = {
   modelCompatFields: new Set(),
   providerFields: new Set(),
   modelFields: new Set(),
-  subagent: {
-    visible: false,
-    effectiveVersion: undefined,
-    mode: 'unsupported',
-    supportsAgentOptions: true,
-    supportsReasoningEffort: false,
-    supportsNativeSelection: false,
-    supportsAllowedModels: false,
-    modelSelectionSettings: undefined,
-  },
 }
 
 const EMPTY_STATE: CapabilitiesState = {
@@ -118,8 +91,6 @@ const EMPTY_STATE: CapabilitiesState = {
   providerDrafts: {},
   modelDrafts: {},
   runtimeCaps: EMPTY_RUNTIME_CAPS,
-  subagentControl: { value: {}, writable: true },
-  nativeSubagent: { writable: true },
   enumOptions: { maxTokensField: [], thinkingFormat: [], cacheControlFormat: [] },
 }
 
@@ -309,17 +280,7 @@ function CapabilitiesSection(props: any): any {
       const nextModels = Object.keys(modelDrafts[selectedProvider] ?? {})
       const nextModel = nextModels.includes(selectedModelRef.current) ? selectedModelRef.current : (nextModels[0] ?? '')
 
-      const subagentView = namespaces.find((item: any) => asRecord(item)['ns'] === SUBAGENT_NAMESPACE)
-      const subagentRecord = subagentView === undefined ? undefined : asRecord(subagentView)
-      const subagentValue = subagentRecord ? asRecord(subagentRecord['value']) : {}
-      const nativeView = namespaces.find((item: any) => asRecord(item)['ns'] === SUBAGENT_MODEL_SELECTION_NAMESPACE)
-      const nativeRecord = nativeView === undefined ? undefined : asRecord(nativeView)
-
-      const runtimeCaps = collectRuntimeCapabilities(schema, hostVersion, {
-        ...subagentRuntimeFactsFromValue(subagentValue),
-        modelSelectionNamespacePresent: nativeRecord !== undefined,
-        modelSelectionNamespaceFields: nativeRecord ? schemaObjectKeys(nativeRecord['schema'], []) : undefined,
-      })
+      const runtimeCaps = collectRuntimeCapabilities(schema, hostVersion)
 
       if (generation !== loadGenerationRef.current) return
       const shouldPreserveDrafts = preserveDirty || dirtyVersionRef.current !== startDirtyVersion
@@ -352,21 +313,6 @@ function CapabilitiesSection(props: any): any {
         modelDrafts,
         dshMode: detectDshMode(hostVersion, schema),
         runtimeCaps,
-        subagentControl: {
-          value: {
-            agentOptions: subagentValue['agentOptions'],
-            modelSelectionSettings: typeof subagentValue['modelSelectionSettings'] === 'boolean'
-              ? subagentValue['modelSelectionSettings'] as boolean
-              : undefined,
-          },
-          revision: subagentRecord ? subagentRecord['revision'] as number | undefined : undefined,
-          writable: subagentRecord ? subagentRecord['writable'] !== false : false,
-        },
-        nativeSubagent: {
-          value: nativeRecord ? nativeRecord['value'] : undefined,
-          revision: nativeRecord ? nativeRecord['revision'] as number | undefined : undefined,
-          writable: nativeRecord ? nativeRecord['writable'] !== false : false,
-        },
         enumOptions: collectEnumOptions(schema),
       })
       setSelectedModel(nextModel)
@@ -669,17 +615,8 @@ function CapabilitiesSection(props: any): any {
   })()
 
   const editableModelsByProvider: Record<string, string[]> = {}
-  const reasoningEffortsByModel: Record<string, string[]> = {}
   for (const name of providerNames) {
-    const ids = editableModelIds(name, state.providers[name], state.catalogGroups)
-    editableModelsByProvider[name] = ids
-    for (const model of ids) {
-      reasoningEffortsByModel[`${name}\u0000${model}`] = resolveRuntimeReasoningCapability(state.catalogGroups, name, model).efforts
-    }
-  }
-  const providerSupportsAgentOptions: Record<string, boolean> = {}
-  for (const providerSnapshot of state.runtimeCaps.subagent.providers ?? []) {
-    providerSupportsAgentOptions[providerSnapshot.name] = providerSnapshot.supportsAgentOptions
+    editableModelsByProvider[name] = editableModelIds(name, state.providers[name], state.catalogGroups)
   }
 
   const providerDefaultMissing = (() => {
@@ -818,14 +755,6 @@ function CapabilitiesSection(props: any): any {
         }),
       ),
     ) : null,
-
-    h(SubagentSettingsCard, {
-      t, api, capabilities: state.runtimeCaps.subagent,
-      controlValue: state.subagentControl.value, controlRevision: state.subagentControl.revision,
-      controlWritable: state.subagentControl.writable, nativeNamespace: state.nativeSubagent,
-      providerNames, editableModelsByProvider, reasoningEffortsByModel, providerSupportsAgentOptions,
-      onApplied: () => void load(true),
-    }),
 
     modelIds.length === 0
       ? h('p', { className: 'dsh-mc-empty' }, t('noModels'))
@@ -999,8 +928,6 @@ export const zh: Record<string, string> = {
   modelSettings: '模型设置',
   currentModel: '当前模型',
   configured: '已配置',
-  'subagent.defaultModel': '默认模型',
-  'subagent.allowedModels.selectedSuffix': '个已选择模型',
   'compat.notConfigured': '未配置',
   'compat.configured': '已配置',
   inputCapability: '输入能力',
@@ -1048,46 +975,6 @@ export const zh: Record<string, string> = {
   reasoningLevels: '推理等级',
   reasoningWire: 'Wire 映射',
   resolvedCapability: '解析后能力',
-  'subagent.title': '子代理',
-  'subagent.warning.unverified': '子代理版本无法确认，以下设置按当前检测到的 Schema 显示；低版本可能不生效。',
-  'subagent.warning.legacy': '当前子代理版本低于已验证范围，部分设置可能不生效。',
-  'subagent.legacy.description': '固定模型模式：为新子代理实例写入 provider/model/maxTokens。',
-  'subagent.native.description': '动态模型选择：使用官方 subagent-model-selection 命名空间。',
-  'subagent.status.legacy': '固定模型',
-  'subagent.status.native': '动态选择',
-  'subagent.defaultBehavior': '默认行为',
-  'subagent.inheritMain': '继承主模型',
-  'subagent.fixedModel': '固定子代理模型',
-  'subagent.provider': '子代理提供方',
-  'subagent.model': '子代理模型',
-  'subagent.maxTokens': '最大输出 tokens',
-  'subagent.maxTokensPlaceholder': '留空继承',
-  'subagent.reasoningEffort': '推理等级',
-  'subagent.reasoning.auto': '自动',
-  'subagent.effectiveNote': '保存后对新建子代理会话生效。',
-  'subagent.backendManagesModel': '该子代理后端由其运行时自身管理模型配置。',
-  'subagent.agentOptionsUnsupported': '当前子代理运行时不支持 agentOptions 固定模型配置。',
-  'subagent.apply': '应用子代理设置',
-  'subagent.savedNewSessions': '已保存，对新的子代理会话生效。',
-  'subagent.applyFailed': '保存失败',
-  'subagent.readonly': '子代理设置当前为只读。',
-  'subagent.modelSelectionNotEnabled': '动态模型选择尚未启用。',
-  'subagent.enableModelSelection': '启用动态模型选择',
-  'subagent.modelSelectionConfigRequired': '需要 DSH 配置启用子代理模型选择功能。',
-  'subagent.enableDynamicSelection': '启用动态选择',
-  'subagent.allowedModels': '允许的模型池',
-  'subagent.allowedModels.description': '子代理可在此池中自行选择模型。',
-  'subagent.allowedModels.emptySummary': '尚未选择模型',
-  'subagent.allowedModels.empty': '启用动态选择时至少需要一个模型。',
-  'subagent.allowedModels.duplicate': '模型池中存在重复的 提供方/模型 组合。',
-  'subagent.allowedModels.incomplete': '模型池中存在未填完整的条目。',
-  'subagent.editPool': '编辑模型池',
-  'subagent.doneEditingPool': '完成',
-  'subagent.searchPool': '搜索模型…',
-  'subagent.defaultModelDisclosure': '默认模型（高级）',
-  'subagent.defaultModelNote': '动态选择启用后，可通过上方固定模型设置指定默认模型；留空继承主模型。',
-  'subagent.selectProvider': '选择提供方',
-  'subagent.selectModel': '选择模型',
   'compat.providerAuto': '自动',
   'compat.modelInheritProvider': '继承提供方',
   'compat.auto': '自动',
@@ -1170,8 +1057,6 @@ export const zh: Record<string, string> = {
   reasoningEffortUnsupportedTitle: '推理等级不兼容',
   reasoningEffortUnsupportedHit: '当前 DSH 没有声明支持',
   modeNativeDetail: '无需适配器补丁。',
-  'subagent.reasoning.unsupportedSuffix': '（当前不支持）',
-  'subagent.reasoning.unsupportedBlocked': '当前模型不支持所选推理等级，请先切换到支持的档位。',
   'compat.supportsStreaming.label': '支持流式',
   'compat.supportsStreaming.description': '兼容流式响应。',
 }
@@ -1196,8 +1081,6 @@ export const en: Record<string, string> = {
   modelSettings: 'Model settings',
   currentModel: 'Current model',
   configured: 'Configured',
-  'subagent.defaultModel': 'Default model',
-  'subagent.allowedModels.selectedSuffix': 'selected models',
   'compat.notConfigured': 'Not configured',
   'compat.configured': 'Configured',
   inputCapability: 'Input capability',
@@ -1245,46 +1128,6 @@ export const en: Record<string, string> = {
   reasoningLevels: 'Reasoning levels',
   reasoningWire: 'Wire mapping',
   resolvedCapability: 'Resolved capability',
-  'subagent.title': 'Subagents',
-  'subagent.warning.unverified': 'Subagent version could not be confirmed. Settings below follow the detected Schema; older versions may not apply them.',
-  'subagent.warning.legacy': 'The subagent version is below the verified range; some settings may not apply.',
-  'subagent.legacy.description': 'Fixed model mode: writes provider/model/maxTokens for new subagent instances.',
-  'subagent.native.description': 'Dynamic selection: uses the official subagent-model-selection namespace.',
-  'subagent.status.legacy': 'Fixed model',
-  'subagent.status.native': 'Dynamic selection',
-  'subagent.defaultBehavior': 'Default behavior',
-  'subagent.inheritMain': 'Inherit main model',
-  'subagent.fixedModel': 'Fixed subagent model',
-  'subagent.provider': 'Subagent provider',
-  'subagent.model': 'Subagent model',
-  'subagent.maxTokens': 'Max output tokens',
-  'subagent.maxTokensPlaceholder': 'Leave empty to inherit',
-  'subagent.reasoningEffort': 'Reasoning effort',
-  'subagent.reasoning.auto': 'Auto',
-  'subagent.effectiveNote': 'Applies to newly created subagent sessions.',
-  'subagent.backendManagesModel': 'This subagent backend manages model configuration in its own runtime.',
-  'subagent.agentOptionsUnsupported': 'The subagent runtime does not support fixed agentOptions model configuration.',
-  'subagent.apply': 'Apply subagent settings',
-  'subagent.savedNewSessions': 'Saved — applies to new subagent sessions.',
-  'subagent.applyFailed': 'Failed to save',
-  'subagent.readonly': 'Subagent settings are read-only.',
-  'subagent.modelSelectionNotEnabled': 'Dynamic model selection is not enabled yet.',
-  'subagent.enableModelSelection': 'Enable dynamic model selection',
-  'subagent.modelSelectionConfigRequired': 'DSH configuration must enable subagent model selection.',
-  'subagent.enableDynamicSelection': 'Enable dynamic selection',
-  'subagent.allowedModels': 'Allowed model pool',
-  'subagent.allowedModels.description': 'Subagents may choose models from this pool.',
-  'subagent.allowedModels.emptySummary': 'No models selected yet',
-  'subagent.allowedModels.empty': 'Dynamic selection needs at least one model.',
-  'subagent.allowedModels.duplicate': 'Duplicate provider/model entries in the pool.',
-  'subagent.allowedModels.incomplete': 'Incomplete provider/model entries in the pool.',
-  'subagent.editPool': 'Edit pool',
-  'subagent.doneEditingPool': 'Done',
-  'subagent.searchPool': 'Search models…',
-  'subagent.defaultModelDisclosure': 'Default model (advanced)',
-  'subagent.defaultModelNote': 'When dynamic selection is enabled, the fixed-model settings above can define a default; leave empty to inherit the main model.',
-  'subagent.selectProvider': 'Select provider',
-  'subagent.selectModel': 'Select model',
   'compat.providerAuto': 'Auto',
   'compat.modelInheritProvider': 'Inherit provider',
   'compat.auto': 'Auto',
@@ -1367,8 +1210,6 @@ export const en: Record<string, string> = {
   reasoningEffortUnsupportedTitle: 'Reasoning effort not supported',
   reasoningEffortUnsupportedHit: 'DSH currently does not declare support for',
   modeNativeDetail: 'No adapter patch required.',
-  'subagent.reasoning.unsupportedSuffix': '(currently unsupported)',
-  'subagent.reasoning.unsupportedBlocked': 'The current model does not support the selected reasoning level; switch to a supported level first.',
   'compat.supportsStreaming.label': 'Supports streaming',
   'compat.supportsStreaming.description': 'Accepts streaming responses.',
 }

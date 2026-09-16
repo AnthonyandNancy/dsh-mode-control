@@ -55,7 +55,7 @@ describe('new-era transport envelope mapping', () => {
     writable: true,
     namespaces: [
       { ns: 'llm-pi-ai', value: { providers: {} }, schema: { uid: 1, refs: {} }, revision: 7 },
-      { ns: 'dsh-mode-control-subagent', value: {}, revision: 2 },
+      { ns: 'agent-default-model', value: {}, revision: 2 },
     ],
   }
 

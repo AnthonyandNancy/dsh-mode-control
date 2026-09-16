@@ -18,7 +18,6 @@ import {
   toReasoningEfforts,
   validateCapabilities,
 } from './compile.ts'
-import { startSubagentSettingsRegistration } from './subagent/config-service.ts'
 
 export * from './types.ts'
 export {
@@ -32,12 +31,9 @@ export const name = '@deepseek-ai/dsh-llm-pi-ai-capabilities'
 
 /** Host plugin body; the runtime effect is delivered through the client settings page. */
 export function apply(_ctx: any): void {
-  // The subagent model control service registers its auditable settings
-  // namespace only when the version gate passes. It uses the official loader
-  // Entry.update() API, never direct file/JS surgery. Registration is
-  // lifecycle-aware: it retries when the tool-subagent loader entry appears
-  // later, and stays idempotent.
-  startSubagentSettingsRegistration(_ctx)
+  // Intentionally empty: the host half owns no runtime state and touches no
+  // settings namespace. Every writable surface is delivered by the client
+  // settings editor through the native DSH settings API.
 }
 
 export default { name, apply }

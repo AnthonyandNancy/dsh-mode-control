@@ -168,7 +168,7 @@ export interface SettingsSelectTriggerProps {
 /**
  * Single visual chrome for every DSH-style settings selector. `CompactSelect`
  * and `ModelRoutePicker` must render through this component so Provider /
- * Model / Reasoning / Compat / Subagent controls share one trigger surface.
+ * Model / Reasoning / Compat controls share one trigger surface.
  */
 export function SettingsSelectTrigger(props: SettingsSelectTriggerProps): any {
   const h = createElement

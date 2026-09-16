@@ -5,9 +5,6 @@ import {
   protocolsForModel,
   protocolsForProvider,
   schemaEnumValues,
-  schemaObjectKeys,
-  subagentRuntimeFactsFromValue,
-  type RuntimeCapabilities,
 } from '../src/client/runtime-capabilities.ts'
 
 function ref(node: Record<string, unknown>, refs: Record<number, unknown>): number {
@@ -67,7 +64,7 @@ describe('schema introspection', () => {
   const schema = buildSchema()
 
   it('collects provider and model fields', () => {
-    const caps = collectRuntimeCapabilities(schema, '0.1.1-rc.2', {})
+    const caps = collectRuntimeCapabilities(schema, '0.1.1-rc.2')
     expect(caps.providerFields.has('defaultContextWindow')).toBe(true)
     expect(caps.providerFields.has('defaultMaxTokens')).toBe(true)
     expect(caps.modelFields.has('contextWindow')).toBe(true)
@@ -77,9 +74,9 @@ describe('schema introspection', () => {
   })
 
   it('keeps provider and model compat schemas separate', () => {
-    const caps = collectRuntimeCapabilities(buildSchema(), '0.1.1-rc.2', {}) as RuntimeCapabilities & { modelCompatFields?: Set<string> }
+    const caps = collectRuntimeCapabilities(buildSchema(), '0.1.1-rc.2')
     expect(caps.compatFields.has('supportsStore')).toBe(true)
-    expect(caps.modelCompatFields?.has('supportsStore')).toBe(false)
+    expect(caps.modelCompatFields.has('supportsStore')).toBe(false)
   })
 
   it('collects enum values from union nodes', () => {
@@ -194,123 +191,3 @@ describe('model protocol resolution', () => {
     expect(protocolsForModel('anthropic', 'claude-3', {}, [])).toEqual([])
   })
 })
-
-describe('runtime capabilities shape', () => {
-  it('exposes subagent capabilities', () => {
-    const caps = collectRuntimeCapabilities(buildSchema(), '0.1.1-rc.2', {
-      entryFound: true,
-      effectiveVersion: '0.1.1-rc.2',
-      toolSubagentSchemaFields: new Set(['provider']),
-    })
-    const runtime: RuntimeCapabilities = caps
-    expect(runtime.subagent.visible).toBe(true)
-    expect(runtime.subagent.mode).toBe('legacy-static')
-  })
-})
-
-describe('nested subagent runtime facts', () => {
-  it('unpacks runtime facts from value.runtime instead of the namespace root', () => {
-    const facts = subagentRuntimeFactsFromValue({
-      agentOptions: { provider: 'p', model: 'm' },
-      runtime: {
-        effectiveVersion: '0.1.1-rc.2',
-        toolSubagentSchemaFields: ['modelSelectionSettings'],
-        agentOptionsSchemaFields: ['provider', 'model'],
-        modelSelectionSettings: true,
-        providers: [
-          { name: 'acme', supportsAgentOptions: true },
-          { name: 'beta', supportsAgentOptions: false },
-        ],
-      },
-    })
-
-    expect(facts.runtime?.effectiveVersion).toBe('0.1.1-rc.2')
-    expect(facts.runtime?.toolSubagentSchemaFields).toEqual(['modelSelectionSettings'])
-    expect(facts.runtime?.agentOptionsSchemaFields).toEqual(['provider', 'model'])
-    expect(facts.runtime?.modelSelectionSettings).toBe(true)
-    expect(facts.runtime?.providers).toEqual([
-      { name: 'acme', supportsAgentOptions: true },
-      { name: 'beta', supportsAgentOptions: false },
-    ])
-  })
-
-  it('makes the subagent UI visible from a nested effectiveVersion', () => {
-    const facts = subagentRuntimeFactsFromValue({
-      runtime: { effectiveVersion: '0.1.1-rc.2', entryFound: true },
-    })
-    const caps = collectRuntimeCapabilities(buildSchema(), undefined, facts)
-    expect(caps.subagent.visible).toBe(true)
-    expect(caps.subagent.mode).toBe('legacy-static')
-  })
-
-  it('detects native-selection from nested toolSubagentSchemaFields', () => {
-    const facts = subagentRuntimeFactsFromValue({
-      runtime: {
-        effectiveVersion: '0.1.1-rc.2',
-        entryFound: true,
-        toolSubagentSchemaFields: ['modelSelectionSettings'],
-        agentOptionsSchemaFields: ['provider', 'model'],
-      },
-    })
-    const caps = collectRuntimeCapabilities(buildSchema(), undefined, {
-      ...facts,
-      modelSelectionNamespacePresent: true,
-      modelSelectionNamespaceFields: new Set(['enabled', 'allowedModels']),
-    })
-    expect(caps.subagent.mode).toBe('native-selection')
-  })
-
-  it('preserves nested provider supportsAgentOptions through capability detection', () => {
-    const facts = subagentRuntimeFactsFromValue({
-      runtime: {
-        effectiveVersion: '0.1.1-rc.2',
-        entryFound: true,
-        providers: [
-          { name: 'acme', supportsAgentOptions: true },
-          { name: 'beta', supportsAgentOptions: false },
-        ],
-      },
-    })
-    const caps = collectRuntimeCapabilities(buildSchema(), undefined, facts)
-    expect(caps.subagent.providers).toEqual([
-      { name: 'acme', supportsAgentOptions: true },
-      { name: 'beta', supportsAgentOptions: false },
-    ])
-  })
-
-  it('fails closed when the runtime block is missing', () => {
-    const facts = subagentRuntimeFactsFromValue({})
-    expect(facts.runtime?.effectiveVersion).toBeUndefined()
-    expect(facts.runtime?.providers).toBeUndefined()
-    const caps = collectRuntimeCapabilities(buildSchema(), undefined, facts)
-    expect(caps.subagent.visible).toBe(false)
-    expect(caps.subagent.providers).toBeUndefined()
-  })
-})
-
-  it('preserves host diagnostics fields through the client runtime bridge', () => {
-    const facts = subagentRuntimeFactsFromValue({
-      runtime: {
-        effectiveVersion: '0.1.1-rc.2',
-        entryFound: true,
-        versionSource: 'entry-base-package',
-        hiddenReason: undefined,
-        targetEntryId: 'delegation:tool-subagent',
-        targetToolName: 'subagent',
-        targetProvider: 'spawn',
-        targetBaseUrl: 'file:///profile/',
-      },
-    })
-    expect(facts.runtime?.versionSource).toBe('entry-base-package')
-    expect(facts.runtime?.targetEntryId).toBe('delegation:tool-subagent')
-    expect(facts.runtime?.targetToolName).toBe('subagent')
-    expect(facts.runtime?.targetProvider).toBe('spawn')
-    expect(facts.runtime?.targetBaseUrl).toBe('file:///profile/')
-    const caps = collectRuntimeCapabilities(buildSchema(), undefined, facts)
-    expect(caps.subagent.visible).toBe(true)
-    expect(caps.subagent.versionSource).toBe('entry-base-package')
-    expect(caps.subagent.targetEntryId).toBe('delegation:tool-subagent')
-    expect(caps.subagent.targetToolName).toBe('subagent')
-    expect(caps.subagent.targetProvider).toBe('spawn')
-    expect(caps.subagent.targetBaseUrl).toBe('file:///profile/')
-  })

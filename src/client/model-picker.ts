@@ -106,8 +106,8 @@ export function buildModelRouteOptions(
 /**
  * Build a single-provider model directory for the Model Settings picker.
  *
- * Model Settings edits only the currently selected provider; unlike the
- * Subagent picker it must never show models from other providers.
+ * Model Settings edits only the currently selected provider, so the picker
+ * must never show models from other providers.
  */
 export function buildProviderModelRouteOptions(
   provider: string,

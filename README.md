@@ -1,7 +1,6 @@
 # @deepseek-ai/dsh-llm-pi-ai-capabilities
 
-DSH 模型能力 + Reasoning 能力 + Wire Compatibility + Subagent Model Control
-配置界面。
+DSH 模型能力 + Reasoning 能力 + Wire Compatibility 配置界面。
 
 This plugin is **not** a second LLM provider and does **not** replace
 `PiAiAdapter`. It is a settings/UI bridge over native DSH settings
@@ -23,29 +22,6 @@ source.
 The UI detects the running mode from `api.host.describe().version` and falls
 back to the serialized `llm-pi-ai` settings schema.
 
-### dsh-tool-subagent visibility policy
-
-| `@deepseek-ai/dsh-tool-subagent` | Subagent area |
-| -------------------------------- | ------------- |
-| Canonical loader entry missing    | Hidden        |
-| Entry present, version unknown    | Visible + unverified warning |
-| Entry present, `< 0.1.1-rc.2`    | Visible + legacy warning |
-| Entry present, `>= 0.1.1-rc.2`   | Visible + confirmed |
-
-Subagent UI is entry/schema driven; the version is advisory only:
-
-- **Host**: the `dsh-mode-control-subagent` settings namespace is registered
-  whenever a canonical `tool-subagent` loader entry exists. The version is
-  recorded in the runtime snapshot for warnings. The id is hyphen-only: the
-  host rejects dotted namespace names (`/^[a-z][a-z0-9-]*$/`) since DSH
-  0.1.0-rc.7, and a rejected registration hides the whole card.
-- **Client**: `SubagentSettingsCard` returns `null` only when
-  `runtimeCaps.subagent.visible` is false (entry missing).
-
-Unverified or older versions remain visible with a lightweight warning; the
-writable controls are still decided by the detected Schemastery schema, so no
-unsupported field is ever written blindly.
-
 ## Feature overview
 
 - **Provider capabilities**: `defaultInput`, `defaultContextWindow`,
@@ -56,8 +32,6 @@ unsupported field is ever written blindly.
 - **Interface Compatibility**: generic metadata-driven UI over the `compat`
   object. The field list lives in `src/client/compat-fields.ts`; adding a
   future pi-ai compat field is one registry entry + i18n strings.
-- **Subagent Model Control**: legacy fixed model (`agentOptions`) and native
-  dynamic selection (`subagent-model-selection.enabled/allowedModels`).
 - **InheritBooleanMode**: `inherit` / `enabled` / `disabled` tri-states with
   `parseInheritBoolean()` and `collectOptionalBooleanOp()`.
 - **Runtime schema detection**: the UI walks the serialized Schemastery
@@ -124,13 +98,9 @@ pi-ai
 
 ## Scope and constraints
 
-The plugin writes only these namespaces:
+The plugin writes only this namespace:
 
 - `llm-pi-ai` — provider/model capabilities and `compat`.
-- `dsh-mode-control-subagent` — auditable bridge surface for legacy
-  `agentOptions` and the native tool-instance toggle.
-- `subagent-model-selection` — official native allowed-model list, when the
-  namespace exists.
 
 It never:
 
@@ -218,29 +188,6 @@ there is no per-field JSX duplication. `chatTemplateKwargs` /
 `chatTemplateArgs` are JSON textareas; `maxTokensField` / `thinkingFormat`
 are enums sourced from the runtime schema.
 
-## Subagent model control
-
-The subagent card appears whenever the canonical `tool-subagent` entry is
-detected. The version is advisory: unverified or older versions stay visible
-with a warning while the writable controls remain schema-driven.
-
-- **Legacy Static** (`agentOptions`): provider / model / maxTokens, plus
-  `reasoningEffort` when the runtime `agentOptions` schema supports it.
-  `Inherit` removes the managed `agentOptions` entirely.
-- **Native Selection** (official `subagent-model-selection`):
-  - `enabled` toggle.
-  - allowed-model pool picker with duplicate / empty validation.
-  - writes `enabled` and `allowedModels` through the official namespace.
-- The tool-instance toggle (`modelSelectionSettings`) is applied through the
-  plugin's own namespace and forwarded to the tool-subagent loader entry via
-  the official `Entry.update()` API. Unknown `agentOptions` fields survive.
-
-Allowed-model validation:
-
-- `enabled: true` with an empty pool is rejected.
-- duplicate `provider/model` routes are rejected.
-- incomplete routes (empty provider or model) are rejected.
-
 ## Runtime schema detection
 
 The client resolves the serialized Schemastery envelope and produces:
@@ -248,9 +195,9 @@ The client resolves the serialized Schemastery envelope and produces:
 ```ts
 interface RuntimeCapabilities {
   compatFields: Set<string>
+  modelCompatFields: Set<string>
   providerFields: Set<string>
   modelFields: Set<string>
-  subagent: SubagentRuntimeCapabilities
 }
 ```
 
@@ -298,9 +245,9 @@ an installable package.
 npm test
 ```
 
-Pure logic modules are unit-tested: semver parsing, subagent capability
-detection, compat metadata, compat state/merge, provider/model ops, subagent
-drafts, and runtime schema introspection.
+Pure logic modules are unit-tested: compat metadata, compat state/merge,
+provider/model ops, reasoning capabilities, the settings transport, and
+runtime schema introspection.
 
 ## Install from GitHub source
 
@@ -339,11 +286,11 @@ DSH plugin. The client half registers a **Model Capabilities** section in
 Settings.
 
 The Model Capabilities settings UI follows DSH's selector-first interaction model.
-Model catalogs and subagent model pools are opened on demand through
-provider-grouped searchable pickers instead of permanent lists. Settings use
-compact rows and progressive disclosure so advanced compatibility, JSON, wire
-values, and thinking budgets appear only when opened.
+Model catalogs are opened on demand through provider-grouped searchable pickers
+instead of permanent lists. Settings use compact rows and progressive
+disclosure so advanced compatibility, JSON, wire values, and thinking budgets
+appear only when opened.
 
-模型能力设置界面遵循 DSH 的 selector-first 交互模型。模型目录和子代理模型池
-通过按提供方分组、支持搜索的选择器按需打开，而不是永久展示列表；高级兼容性、
-JSON、wire values 与推理预算使用渐进式折叠，页面默认保持紧凑。
+模型能力设置界面遵循 DSH 的 selector-first 交互模型。模型目录通过按提供方分组、
+支持搜索的选择器按需打开，而不是永久展示列表；高级兼容性、JSON、wire values 与
+推理预算使用渐进式折叠，页面默认保持紧凑。

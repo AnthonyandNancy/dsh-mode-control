@@ -26,7 +26,6 @@ export const CAPABILITIES_CSS = `
 .dsh-mc-subsection-title{color:var(--dsw-alias-label-primary);margin:0;padding-left:0;font-size:13px;font-weight:600;line-height:20px}
 .dsh-mc-subsection + .dsh-mc-subsection{border-top:1px solid var(--dsw-alias-border-l2);padding-top:14px;margin-top:14px}
 .dsh-mc-subsection-body{min-width:0;display:flex;flex-direction:column;padding-left:0;gap:4px}
-.dsh-mc-subagent-description{margin:-4px 0 0}
 .dsh-mc-section-caption{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
 
 /* Setting rows: native settings rhythm + hairline; nested rows stay compact. */

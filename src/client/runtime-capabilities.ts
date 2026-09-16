@@ -7,14 +7,11 @@
  * to show/hide/disable controls.
  */
 
-import { detectSubagentCapabilities, type SubagentCapabilityInput, type SubagentRuntimeCapabilities } from '../subagent/capabilities.ts'
-
 export interface RuntimeCapabilities {
   compatFields: Set<string>
   modelCompatFields: Set<string>
   providerFields: Set<string>
   modelFields: Set<string>
-  subagent: SubagentRuntimeCapabilities
 }
 
 type SchemaNode = Record<string, any> | number | undefined
@@ -182,24 +179,6 @@ export function protocolsForModel(
   return []
 }
 
-export interface RuntimeSubagentInput extends SubagentCapabilityInput {
-  /** Raw runtime facts from the host service namespace. */
-  runtime?: {
-    effectiveVersion?: string
-    versionSource?: string
-    hiddenReason?: string
-    targetEntryId?: string
-    targetToolName?: string
-    targetProvider?: string
-    targetBaseUrl?: string
-    entryFound?: boolean
-    toolSubagentSchemaFields?: string[]
-    agentOptionsSchemaFields?: string[]
-    modelSelectionSettings?: boolean
-    providers?: Array<{ name: string; supportsAgentOptions: boolean }>
-  }
-}
-
 function recordOf(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -207,70 +186,12 @@ function recordOf(value: unknown): Record<string, unknown> {
 }
 
 /**
- * Unpack the subagent runtime facts that the host service stores under
- * `value.runtime`. The namespace root also contains writable fields
- * (`agentOptions`, `modelSelectionSettings`), so the client must read the
- * nested runtime block for capability detection.
- */
-export function subagentRuntimeFactsFromValue(value: unknown): RuntimeSubagentInput {
-  const runtime = recordOf(recordOf(value)['runtime'])
-  const providers: Array<{ name: string; supportsAgentOptions: boolean }> = []
-  for (const item of Array.isArray(runtime['providers']) ? runtime['providers'] : []) {
-    const provider = recordOf(item)
-    if (typeof provider['name'] !== 'string' || provider['name'] === '') continue
-    providers.push({
-      name: provider['name'],
-      supportsAgentOptions: provider['supportsAgentOptions'] !== false,
-    })
-  }
-  return {
-    runtime: {
-      effectiveVersion: typeof runtime['effectiveVersion'] === 'string'
-        ? runtime['effectiveVersion'] as string
-        : undefined,
-      versionSource: typeof runtime['versionSource'] === 'string'
-        ? runtime['versionSource'] as string
-        : undefined,
-      hiddenReason: typeof runtime['hiddenReason'] === 'string'
-        ? runtime['hiddenReason'] as string
-        : undefined,
-      targetEntryId: typeof runtime['targetEntryId'] === 'string'
-        ? runtime['targetEntryId'] as string
-        : undefined,
-      targetToolName: typeof runtime['targetToolName'] === 'string'
-        ? runtime['targetToolName'] as string
-        : undefined,
-      targetProvider: typeof runtime['targetProvider'] === 'string'
-        ? runtime['targetProvider'] as string
-        : undefined,
-      targetBaseUrl: typeof runtime['targetBaseUrl'] === 'string'
-        ? runtime['targetBaseUrl'] as string
-        : undefined,
-      entryFound: typeof runtime['entryFound'] === 'boolean'
-        ? runtime['entryFound'] as boolean
-        : undefined,
-      toolSubagentSchemaFields: Array.isArray(runtime['toolSubagentSchemaFields'])
-        ? (runtime['toolSubagentSchemaFields'] as string[])
-        : undefined,
-      agentOptionsSchemaFields: Array.isArray(runtime['agentOptionsSchemaFields'])
-        ? (runtime['agentOptionsSchemaFields'] as string[])
-        : undefined,
-      modelSelectionSettings: typeof runtime['modelSelectionSettings'] === 'boolean'
-        ? runtime['modelSelectionSettings'] as boolean
-        : undefined,
-      providers: providers.length > 0 ? providers : undefined,
-    },
-  }
-}
-
-/**
- * Build the full runtime capability set from a serialized settings schema and
- * subagent facts.
+ * Build the runtime capability set from the serialized `llm-pi-ai` settings
+ * schema.
  */
 export function collectRuntimeCapabilities(
   schema: unknown,
-  _hostVersion: string | undefined,
-  subagent: RuntimeSubagentInput,
+  _hostVersion?: string | undefined,
 ): RuntimeCapabilities {
   const providerFields = schemaObjectKeys(schema, ['providers', 'inner'])
   const modelFields = new Set<string>([
@@ -282,37 +203,10 @@ export function collectRuntimeCapabilities(
     ...schemaObjectKeys(schema, ['providers', 'inner', 'models', 'inner', 'compat']),
     ...schemaObjectKeys(schema, ['providers', 'inner', 'modelOverrides', 'inner', 'compat']),
   ])
-  const runtime = subagent.runtime
-  const subagentCaps = detectSubagentCapabilities({
-    entryFound: subagent.entryFound ?? runtime?.entryFound,
-    effectiveVersion: subagent.effectiveVersion ?? runtime?.effectiveVersion,
-    toolSubagentSchemaFields: subagent.toolSubagentSchemaFields ?? (
-      runtime?.toolSubagentSchemaFields ? new Set(runtime.toolSubagentSchemaFields) : undefined
-    ),
-    agentOptionsSchemaFields: subagent.agentOptionsSchemaFields ?? (
-      runtime?.agentOptionsSchemaFields ? new Set(runtime.agentOptionsSchemaFields) : undefined
-    ),
-    modelSelectionNamespacePresent: subagent.modelSelectionNamespacePresent,
-    modelSelectionNamespaceFields: subagent.modelSelectionNamespaceFields,
-    supportsAgentOptions: subagent.supportsAgentOptions,
-    modelSelectionSettings: subagent.modelSelectionSettings ?? runtime?.modelSelectionSettings,
-  })
-  const resolvedSubagent: SubagentRuntimeCapabilities = {
-    ...subagentCaps,
-    ...(runtime?.entryFound !== undefined ? { entryFound: runtime.entryFound } : {}),
-    ...(runtime?.versionSource ? { versionSource: runtime.versionSource } : {}),
-    ...(runtime?.hiddenReason ? { hiddenReason: runtime.hiddenReason } : {}),
-    ...(runtime?.targetEntryId ? { targetEntryId: runtime.targetEntryId } : {}),
-    ...(runtime?.targetToolName ? { targetToolName: runtime.targetToolName } : {}),
-    ...(runtime?.targetProvider ? { targetProvider: runtime.targetProvider } : {}),
-    ...(runtime?.targetBaseUrl ? { targetBaseUrl: runtime.targetBaseUrl } : {}),
-    ...(runtime?.providers ? { providers: runtime.providers } : {}),
-  }
   return {
     compatFields,
     modelCompatFields,
     providerFields,
     modelFields,
-    subagent: resolvedSubagent,
   }
 }
